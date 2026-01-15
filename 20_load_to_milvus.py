@@ -1,0 +1,187 @@
+# populates Milvus the first time
+# recreates/resets the collection (after schema changes, chunking changes, redaction changes, embedding model changes, etc.)
+# recovers from a bad/partial index
+
+import mysql.connector
+from bs4 import BeautifulSoup
+from pymilvus import connections, Collection
+from ollama import Client
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from dotenv import load_dotenv
+import os
+import re
+from collections import defaultdict
+
+# 1. Setup
+load_dotenv()
+SERVER_IP = os.getenv('SERVER_IP')
+
+client = Client(host=f"http://{SERVER_IP}:11434")
+EMBED_MODEL = "bge-m3"
+
+print(f"Using Ollama model '{EMBED_MODEL}' for embeddings...")
+
+connections.connect(host=SERVER_IP, port='19530')
+collection = Collection("osticket_knowledge")
+
+db = mysql.connector.connect(
+    host=os.getenv("MYSQL_HOST"),
+    user=os.getenv("MYSQL_USER"),
+    password=os.getenv("MYSQL_PASSWORD"),
+    database=os.getenv("MYSQL_DATABASE")
+)
+cursor = db.cursor(dictionary=True)
+
+JUNK_KEYWORDS = ["backup failed", "vzdump", "unifi controller", "cron", "alert", "status", "successful backup"]
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1200,
+    chunk_overlap=200,
+    separators=["\n\n", "\n", " ", ""]
+)
+
+def clean_text(html_content):
+    if not html_content:
+        return ""
+    soup = BeautifulSoup(html_content, "html.parser")
+    for img in soup.find_all('img'):
+        img.decompose()
+    text = soup.get_text(separator='\n')
+    patterns_to_cut = [
+        r"From:.*", r"Sent:.*", r"---.*Forwarded Message.*---",
+        r"Προωθημένο μήνυμα", r"On.*wrote:.*", r"Στις.*έγραψε:.*"
+    ]
+    for pattern in patterns_to_cut:
+        text = re.split(pattern, text, flags=re.IGNORECASE | re.MULTILINE)[0]
+    return re.sub(r'\n\s*\n', '\n\n', text).strip()
+
+def redact_secrets(text: str) -> str:
+    """
+    Redact common credential patterns BEFORE embedding/storing.
+    Extend as you discover more patterns in your tickets.
+    """
+    if not text:
+        return ""
+    patterns = [
+        # "admin / password" style
+        r"(\b(?:admin|root|netadmin|user)\b)\s*/\s*([^\s\)]+)",
+        # "password: ..."
+        r"(?i)(password\s*:\s*)(\S+)",
+        # "only password: ..."
+        r"(?i)(only\s+password\s*:\s*)(\S+)",
+    ]
+    redacted = text
+    redacted = re.sub(patterns[0], r"\1 / [REDACTED]", redacted)
+    redacted = re.sub(patterns[1], r"\1[REDACTED]", redacted)
+    redacted = re.sub(patterns[2], r"\1[REDACTED]", redacted)
+    return redacted
+
+def get_embeddings_from_ollama(texts):
+    response = client.embed(model=EMBED_MODEL, input=texts)
+    return response['embeddings']
+
+def process_and_load():
+    # Must match schema order (excluding pk auto_id):
+    # ticket_id, ticket_number, source_type, chunk_index, subject, text_payload, vector
+    all_ticket_ids = []
+    all_ticket_numbers = []
+    all_source_types = []
+    all_chunk_indexes = []
+    all_subjects = []
+    all_payloads = []
+
+    print("🔍 Fetching and Grouping Ticket Threads...")
+    cursor.execute("""
+        SELECT t.ticket_id, t.number, c.subject, e.body, e.poster
+        FROM ost_ticket t
+        JOIN ost_ticket__cdata c ON t.ticket_id = c.ticket_id
+        JOIN ost_thread th ON t.ticket_id = th.object_id
+        JOIN ost_thread_entry e ON th.id = e.thread_id
+        WHERE th.object_type = 'T' AND e.body != ''
+        ORDER BY t.ticket_id, e.created ASC
+    """)
+
+    tickets_data = defaultdict(lambda: {"subject": "", "ticket_number": "", "full_thread": ""})
+
+    for row in cursor.fetchall():
+        subject = row.get('subject') or ""
+        if subject and any(k in subject.lower() for k in JUNK_KEYWORDS):
+            continue
+
+        t_id = row['ticket_id']
+        t_number = row.get('number') or str(t_id)
+
+        body_clean = clean_text(row.get('body'))
+        if len(body_clean) < 20:
+            continue
+
+        if not tickets_data[t_id]["subject"]:
+            tickets_data[t_id]["subject"] = subject
+            tickets_data[t_id]["ticket_number"] = t_number
+            tickets_data[t_id]["full_thread"] = f"Subject: {subject}\n"
+        tickets_data[t_id]["full_thread"] += f"\n--- Post by {row.get('poster')} ---\n{body_clean}\n"
+
+    # Tickets -> chunks
+    for t_id, data in tickets_data.items():
+        t_number = data["ticket_number"] or str(t_id)
+        subject = data["subject"] or ""
+
+        full_thread_redacted = redact_secrets(data["full_thread"])
+        chunks = text_splitter.split_text(full_thread_redacted)
+
+        for chunk_index, chunk in enumerate(chunks):
+            all_ticket_ids.append(int(t_id))
+            all_ticket_numbers.append(str(t_number))
+            all_source_types.append("ticket")
+            all_chunk_indexes.append(int(chunk_index))
+            all_subjects.append(subject)
+            all_payloads.append(chunk)
+
+    # FAQs -> chunks
+    cursor.execute("SELECT faq_id, question, answer FROM ost_faq WHERE ispublished = 1")
+    for row in cursor.fetchall():
+        faq_id = int(row["faq_id"])
+        question = row.get("question") or ""
+        answer = clean_text(row.get("answer"))
+
+        full_text = redact_secrets(f"FAQ: {question}\n\n{answer}")
+        chunks = text_splitter.split_text(full_text)
+
+        for chunk_index, chunk in enumerate(chunks):
+            all_ticket_ids.append(faq_id + 100000)         # keep your existing FAQ ID scheme
+            all_ticket_numbers.append(f"FAQ-{faq_id}")     # fits VARCHAR(32)
+            all_source_types.append("faq")
+            all_chunk_indexes.append(int(chunk_index))
+            all_subjects.append(question)
+            all_payloads.append(chunk)
+
+    if not all_payloads:
+        print("No payloads to embed/insert.")
+        return
+
+    print(f"🧠 Encoding {len(all_payloads)} chunks using Ollama ({EMBED_MODEL})...")
+
+    batch_size = 100
+    all_vectors = []
+    for i in range(0, len(all_payloads), batch_size):
+        batch_texts = all_payloads[i: i + batch_size]
+        vectors = get_embeddings_from_ollama(batch_texts)
+        all_vectors.extend(vectors)
+        print(f"Processed {min(i + batch_size, len(all_payloads))}/{len(all_payloads)}...")
+
+    data = [
+        all_ticket_ids,
+        all_ticket_numbers,
+        all_source_types,
+        all_chunk_indexes,
+        all_subjects,
+        all_payloads,
+        all_vectors,
+    ]
+
+    collection.insert(data)
+    collection.flush()
+    print(f"Success! Total Entities in Milvus: {collection.num_entities}")
+
+if __name__ == "__main__":
+    process_and_load()
