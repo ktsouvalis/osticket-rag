@@ -178,6 +178,61 @@ If you set `RAG_API_KEY`, include:
 
 ---
 
+## Deploy on an app server (Docker / Portainer)
+
+This is the recommended way to run the API on an app server while **Milvus + Ollama + Open WebUI** live elsewhere (e.g. GPU server).
+
+### 1) Clone the repo on the app server
+
+```bash
+git clone https://github.com/<YOU>/<REPO>.git
+cd <REPO>
+cp .env.example .env
+```
+
+Set at least:
+
+- `SERVER_IP=` (GPU server IP where Milvus+Ollama run)
+- `MYSQL_HOST=`, `MYSQL_USER=`, `MYSQL_PASSWORD=`, `MYSQL_DATABASE=`
+- `RAG_API_KEY=` (recommended)
+
+### 2) Start the API container
+
+With Docker Compose (or a Portainer Stack using `docker-compose.yml`):
+
+```bash
+docker compose up -d --build rag-api
+```
+
+Healthcheck:
+
+```bash
+curl -s http://localhost:8000/health
+```
+
+### 3) Run incremental updates (`30_update_milvus.py`)
+
+Run on-demand (one-off container):
+
+```bash
+docker compose --profile manual run --rm rag-updater
+```
+
+Scheduling options:
+
+- **Host cron** (simple/reliable): run the command above every X minutes.
+- **Portainer scheduled job** (if enabled): run the same container command.
+
+### 4) Open WebUI (on GPU server) → Tool calls to app server
+
+Point the Tool base URL to:
+
+- `http://10.23.2.50:8000`
+
+Use `POST /ask` and send header `X-API-Key` if `RAG_API_KEY` is set.
+
+---
+
 ## Notes
 
 - Vector search uses `metric_type = COSINE` to match the collection index.

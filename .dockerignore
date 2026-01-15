@@ -1,0 +1,10 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.milvus_update_state.json
+*.log
+.DS_Store
