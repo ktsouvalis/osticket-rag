@@ -1,10 +1,14 @@
 import os
+import logging
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from rag_core import RagEngine
 
 app = FastAPI(title="osTicket RAG API", version="1.0")
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+logger = logging.getLogger("osticket-rag")
 
 # Create once at startup (keeps Milvus loaded, avoids reconnect per request)
 ENGINE = RagEngine()
@@ -37,5 +41,11 @@ def ask(req: AskRequest, x_api_key: str | None = Header(default=None, alias="X-A
     if not q:
         raise HTTPException(status_code=400, detail="Empty query")
 
-    answer_text = ENGINE.answer(q)
-    return AskResponse(answer=answer_text)
+    try:
+        answer_text = ENGINE.answer(q)
+        return AskResponse(answer=answer_text)
+    except Exception as exc:
+        logger.exception("/ask failed")
+        if os.getenv("RAG_API_DEBUG", "0") == "1":
+            raise HTTPException(status_code=500, detail=f"RAG backend error: {exc!r}")
+        raise HTTPException(status_code=500, detail="RAG backend error")
