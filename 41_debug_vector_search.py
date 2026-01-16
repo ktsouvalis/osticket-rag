@@ -73,7 +73,7 @@ def search_and_fetch(collection: Collection, client: Client, cursor, query_text:
     resp = client.embed(model=embed_model, input=query_text)
     q_vec = _ensure_vector_batch(resp.get("embeddings"))
 
-    search_params = {"metric_type": "COSINE", "params": {"nprobe": int(nprobe)}}
+    search_params = {"metric_type": "COSINE", "params": {}}
 
     results = collection.search(
         data=q_vec,
