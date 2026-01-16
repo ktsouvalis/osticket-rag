@@ -188,10 +188,8 @@ class RagEngine:
         if not self.server_ip:
             raise RuntimeError("SERVER_IP is not set in environment (.env).")
 
-        self.base_ticket_url = (os.getenv("BASE_TICKET_URL", "") or "").strip()
+        self.base_ticket_url = (os.getenv("BASE_TICKET_URL") or "").strip()
         self.embed_model = os.getenv("EMBED_MODEL_NAME", "bge-m3")
-        self.response_model = os.getenv("RESPONSE_MODEL_NAME", "qwen2.5:14b")
-
         # Retrieval knobs
         self.search_limit = int(os.getenv("RAG_SEARCH_LIMIT", "120"))
         self.max_docs = int(os.getenv("RAG_MAX_DOCS", "8"))
@@ -362,13 +360,10 @@ class RagEngine:
 
         return "\n".join(lines)
 
-    def answer(self, user_query: str) -> str:
+    def retrieve_related(self, user_query: str) -> list[dict]:
         user_query = (user_query or "").strip()
         if not user_query:
-            return "Empty query."
-
-        if is_vlan_enumeration_query(user_query):
-            return self.answer_vlan_enumeration(user_query)
+            return []
 
         broad = is_broad_query(user_query)
 
@@ -426,24 +421,15 @@ class RagEngine:
             reverse=True,
         )
 
-        context_blocks = []
         total_chars = 0
-
-        context_doc_keys = set()
-        doc_key_to_label = {}
-        doc_key_to_link = {}
+        results = []
 
         for doc_key, all_items_for_doc in ranked_docs[:max_docs]:
             if not all_items_for_doc:
                 continue
 
             best = max(all_items_for_doc, key=lambda x: x[0])
-            _score, _pk, ticket_id, ticket_number, source_type, _chunk_index, subject, _payload = best
-
-            context_doc_keys.add(doc_key)
-            doc_key_to_label[doc_key] = f"{source_type} #{ticket_number}"
-            if self.base_ticket_url and source_type == "ticket" and isinstance(ticket_id, int) and ticket_id < 100000:
-                doc_key_to_link[doc_key] = f"Ticket #{ticket_number}: {self.base_ticket_url}{ticket_id}"
+            top_score, _pk, ticket_id, ticket_number, source_type, _chunk_index, subject, _payload = best
 
             wanted_idxs = pick_chunk_indices_for_doc(
                 all_items_for_doc,
@@ -461,83 +447,33 @@ class RagEngine:
             score_by_pk = {pk: score for (score, pk, *_rest) in all_items_for_doc}
             fetched.sort(key=lambda x: (x[5] if isinstance(x[5], int) else 10**9))
 
-            chunk_texts = []
+            used_any = False
             for _s, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload in fetched:
                 score = score_by_pk.get(pk)
                 score_txt = f"{score:.4f}" if isinstance(score, float) else "n/a"
                 citation = f"[src: {source_type} #{ticket_number} chunk:{chunk_index} pk:{pk} score:{score_txt}]"
                 block = f"{citation}\n{redact_secrets(payload)}"
-
                 if total_chars + len(block) > self.max_context_chars:
                     break
-                chunk_texts.append(block)
                 total_chars += len(block)
+                used_any = True
 
-            if not chunk_texts:
+            if not used_any:
                 continue
 
-            context_blocks.append(
-                f"<document source_type='{source_type}' ticket_number='{ticket_number}' ticket_id='{ticket_id}' subject='{subject}'>\n"
-                + "\n\n".join(chunk_texts)
-                + "\n</document>"
-            )
+            entry = {
+                "doc_key": doc_key,
+                "source_type": source_type,
+                "ticket_id": int(ticket_id) if isinstance(ticket_id, int) else ticket_id,
+                "ticket_number": ticket_number,
+                "subject": subject,
+                "top_score": top_score,
+            }
+            if self.base_ticket_url and source_type == "ticket" and isinstance(ticket_id, int) and ticket_id < 100000:
+                entry["url"] = f"{self.base_ticket_url}{ticket_id}"
+            results.append(entry)
 
             if total_chars >= self.max_context_chars:
                 break
 
-        full_context = "\n\n".join(context_blocks)
-
-        system_prompt = f"""
-ROLE: Senior IT/DevOps Engineer at the University of Peloponnese.
-
-STRICT RULES:
-1) Use ONLY <context>. Do not add generic steps or assumptions.
-2) If the user request conflicts with the context, state the mismatch explicitly.
-3) For commands/configuration/code blocks: copy verbatim from the context (do not rewrite).
-4) Every bullet/list item must include at least one citation tag like:
-   [src: ticket #000225 chunk:2 pk:123 score:0.8123]
-5) If the context is insufficient, say what is missing.
-6) Most times you will be asked in Greek. ALWAYS RESPOND IN ENGLISH.
-
-OUTPUT:
-- Start with: "Sources used: ..." (list the citation tags you actually relied on)
-- Then answer.
-
-<context>
-{full_context}
-</context>
-
-USER QUERY: {user_query}
-""".strip()
-
-        out = self.ollama.generate(
-            model=self.response_model,
-            prompt=system_prompt,
-            stream=False,
-            options={"temperature": 0, "num_ctx": 32768, "num_predict": 2048},
-        )
-
-        full_answer = (out.get("response") or "").strip()
-
-        # Add "used vs not used" references at the end
-        used_doc_keys = extract_used_doc_keys_from_answer(full_answer)
-        used = sorted([k for k in context_doc_keys if k in used_doc_keys])
-        not_used = sorted([k for k in context_doc_keys if k not in used_doc_keys])
-
-        ref_lines = []
-        if used:
-            ref_lines.append("")
-            ref_lines.append("USED REFERENCES (cited in answer):")
-            for k in used:
-                ref_lines.append(doc_key_to_link.get(k, doc_key_to_label.get(k, k)))
-
-        if not_used:
-            ref_lines.append("")
-            ref_lines.append("RETRIEVED CONTEXT (not cited):")
-            for k in not_used:
-                ref_lines.append(doc_key_to_link.get(k, doc_key_to_label.get(k, k)))
-
-        if ref_lines:
-            full_answer = full_answer + "\n" + "\n".join(ref_lines)
-
-        return full_answer
+        return results

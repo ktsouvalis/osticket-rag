@@ -3,12 +3,12 @@
 RAG pipeline for querying an **osTicket** knowledge base (tickets + FAQs) using:
 
 - **Milvus** for vector search (COSINE)
-- **Ollama** for embeddings + LLM answers
+- **Ollama** for embeddings
 - **MySQL/MariaDB** (osTicket DB) as the source
 
 This repo is intentionally split into:
 - **Control scripts** (create collection, full load, incremental updates)
-- A reusable **RAG engine** (`rag_core.py`) that returns a string (usable from CLI or API)
+- A reusable **RAG engine** (`rag_core.py`) that returns related tickets (usable from CLI or API)
 - A small **HTTP API** (`50_rag_api.py`) to integrate as a Tool in Open WebUI
 
 ---
@@ -32,18 +32,19 @@ This repo is intentionally split into:
   - Keeps state in `.milvus_update_state.json`
 
 - `rag_core.py`
-  - `RagEngine.answer(query: str) -> str`
+  - `RagEngine.retrieve_related(query: str) -> list[dict]`
   - Uses Milvus chunk retrieval + neighbor chunk expansion
-  - Returns citations and splits **used references** vs **retrieved-but-not-used**
+  - Returns related tickets only (no ticket content, no LLM answer)
 
 - `40_rag_answer.py`
-  - CLI runner (interactive). Intended for local testing.
+  - CLI runner (interactive).
+  - Prints related ticket number, subject, and URL
 
 - `50_rag_api.py`
   - FastAPI wrapper around `rag_core.RagEngine`
   - Endpoints:
     - `GET /health`
-    - `POST /ask` → `{ "answer": "..." }`
+    - `POST /ask` → `{ "results": [ { "ticket_number", "subject", "url", ... } ] }`
   - Optional API key via `RAG_API_KEY` header `X-API-Key`
 
 - Helpers (debug / diagnostics)
@@ -91,7 +92,6 @@ Fill in `.env`:
 - `MYSQL_USER=`
 - `MYSQL_PASSWORD=`
 - `MYSQL_DATABASE=`
-- `RESPONSE_MODEL_NAME=` (example: `qwen2.5:14b`)
 - `BASE_TICKET_URL=` (example: `https://patra-helpdesk.uop.gr/scp/tickets.php?id=`)
 - `RESET_COLLECTION=` (`0` or `1`)
 
@@ -166,6 +166,7 @@ Test:
 curl -s http://localhost:8000/health
 
 curl -s -X POST http://localhost:8000/ask \
+  -H 'X-API-Key: your-key' \
   -H 'Content-Type: application/json' \
   -d '{"query":"install gitea on-prem"}'
 ```

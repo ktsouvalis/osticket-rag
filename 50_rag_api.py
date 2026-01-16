@@ -3,7 +3,6 @@ import logging
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from rag_core import RagEngine
-from translation_service import send_to_translation_service
 app = FastAPI(title="osTicket RAG API", version="1.0")
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -21,8 +20,18 @@ class AskRequest(BaseModel):
     query: str
 
 
+class RelatedDoc(BaseModel):
+    doc_key: str
+    source_type: str
+    ticket_id: int | None = None
+    ticket_number: str
+    subject: str
+    top_score: float | None = None
+    url: str | None = None
+
+
 class AskResponse(BaseModel):
-    answer: str
+    results: list[RelatedDoc]
 
 
 @app.get("/health")
@@ -31,7 +40,7 @@ def health():
 
 
 @app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key"), translate: bool = False):
+def ask(req: AskRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
     if API_KEY:
         if not x_api_key or x_api_key != API_KEY:
             raise HTTPException(status_code=401, detail="Invalid API key")
@@ -40,10 +49,8 @@ def ask(req: AskRequest, x_api_key: str | None = Header(default=None, alias="X-A
         raise HTTPException(status_code=400, detail="Empty query")
 
     try:
-        answer_text = ENGINE.answer(q)
-        if translate:
-            answer_text = send_to_translation_service(answer_text)
-        return AskResponse(answer=answer_text)
+        results = ENGINE.retrieve_related(q)
+        return AskResponse(results=results)
     except Exception as exc:
         logger.exception("/ask failed")
         if os.getenv("RAG_API_DEBUG", "0") == "1":
