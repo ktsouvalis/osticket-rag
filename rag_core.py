@@ -415,11 +415,20 @@ class RagEngine:
                     (score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload)
                 )
 
+        def doc_score(items):
+            scores = sorted((item[0] for item in items), reverse=True)
+            if not scores:
+                return 0.0
+            if len(scores) == 1:
+                return scores[0]
+            return (scores[0] + scores[1]) / 2.0
+
         ranked_docs = sorted(
             hits_by_doc.items(),
-            key=lambda kv: max(item[0] for item in kv[1]),
+            key=lambda kv: doc_score(kv[1]),
             reverse=True,
         )
+
 
         total_chars = 0
         results = []
