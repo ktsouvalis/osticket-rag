@@ -7,7 +7,9 @@ def _format_results(results: list[dict]) -> str:
 
     lines = []
     for idx, item in enumerate(results, start=1):
-        header = f"{idx}. {item.get('source_type')} #{item.get('ticket_number')} - {item.get('subject') or 'No subject'}"
+        score = item.get("top_score")
+        score_txt = f"{score:.4f}" if isinstance(score, float) else "n/a"
+        header = f"{idx}. {item.get('source_type')} #{item.get('ticket_number')} - {item.get('subject') or 'No subject'}  (score: {score_txt})"
         lines.append(header)
         if item.get("url"):
             lines.append(f"   URL: {item['url']}")
