@@ -152,7 +152,7 @@ def pick_chunk_indices_for_doc(items, *, top_unique: int, neighbor_window: int, 
     wanted = []
     seen_idx = set()
 
-    for score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload in sorted(
+    for score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload, last_activity_ts in sorted(
         items, key=lambda x: x[0], reverse=True
     ):
         if not isinstance(chunk_index, int):
@@ -197,6 +197,9 @@ class RagEngine:
         self.neighbor_window = int(os.getenv("RAG_NEIGHBOR_WINDOW", "1"))
         self.max_context_chars = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "24000"))
         self.nprobe = int(os.getenv("RAG_NPROBE", "10"))
+        self.score_tie_epsilon = float(os.getenv("RAG_SCORE_TIE_EPSILON", "0.003"))
+        self.recency_boost_weight = float(os.getenv("RAG_RECENCY_BOOST_WEIGHT", "0.0"))
+
 
         # Broad-query adaptation
         self.broad_query_boost = float(os.getenv("RAG_BROAD_QUERY_BOOST", "2.5"))
@@ -238,6 +241,7 @@ class RagEngine:
                 "chunk_index",
                 "subject",
                 "text_payload",
+                "last_activity_ts"
             ],
         )
 
@@ -256,6 +260,7 @@ class RagEngine:
                     r.get("chunk_index"),
                     r.get("subject") or "",
                     payload,
+                    int(r.get("last_activity_ts") or 0),
                 )
             )
         return out
@@ -279,6 +284,7 @@ class RagEngine:
                     "chunk_index",
                     "subject",
                     "text_payload",
+                    "last_activity_ts"
                 ],
             )
 
@@ -320,7 +326,7 @@ class RagEngine:
         hits = hits[: self.vlan_enum_max_results]
 
         evidence = defaultdict(list)
-        for score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload in hits:
+        for score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload, last_activity_ts in hits:
             vids = extract_vlan_ids(payload)
             if not vids:
                 continue
@@ -390,6 +396,7 @@ class RagEngine:
                 "chunk_index",
                 "subject",
                 "text_payload",
+                "last_activity_ts",
             ],
         )
 
@@ -409,11 +416,13 @@ class RagEngine:
                 source_type = ent.get("source_type") or "ticket"
                 chunk_index = ent.get("chunk_index")
                 subject = ent.get("subject") or ""
-
+                last_activity_ts = ent.get("last_activity_ts")
                 doc_key = f"{source_type.lower()}:{ticket_number}"
                 hits_by_doc[doc_key].append(
-                    (score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload)
+                    (score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload, last_activity_ts)
                 )
+
+        eps = getattr(self, "score_tie_epsilon", 0.003)
 
         def doc_score(items):
             scores = sorted((item[0] for item in items), reverse=True)
@@ -423,9 +432,13 @@ class RagEngine:
                 return scores[0]
             return (scores[0] + scores[1]) / 2.0
 
+        def doc_last_ts(items):
+            # last_ts is the last element in our tuple
+            return max((item[-1] or 0) for item in items)
+
         ranked_docs = sorted(
             hits_by_doc.items(),
-            key=lambda kv: doc_score(kv[1]),
+            key=lambda kv: (round(doc_score(kv[1]) / eps) * eps, doc_last_ts(kv[1])),
             reverse=True,
         )
 
@@ -438,7 +451,7 @@ class RagEngine:
                 continue
 
             best = max(all_items_for_doc, key=lambda x: x[0])
-            top_score, _pk, ticket_id, ticket_number, source_type, _chunk_index, subject, _payload = best
+            top_score, _pk, ticket_id, ticket_number, source_type, _chunk_index, subject, _payload, _last_activity_ts = best
 
             wanted_idxs = pick_chunk_indices_for_doc(
                 all_items_for_doc,
@@ -457,7 +470,7 @@ class RagEngine:
             fetched.sort(key=lambda x: (x[5] if isinstance(x[5], int) else 10**9))
 
             used_any = False
-            for _s, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload in fetched:
+            for _s, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload, last_activity_ts in fetched:
                 score = score_by_pk.get(pk)
                 score_txt = f"{score:.4f}" if isinstance(score, float) else "n/a"
                 citation = f"[src: {source_type} #{ticket_number} chunk:{chunk_index} pk:{pk} score:{score_txt}]"
@@ -477,6 +490,8 @@ class RagEngine:
                 "ticket_number": ticket_number,
                 "subject": subject,
                 "top_score": top_score,
+                "last_activity_ts": int(last_activity_ts) if last_activity_ts else 0,
+
             }
             if self.base_ticket_url and source_type == "ticket" and isinstance(ticket_id, int) and ticket_id < 100000:
                 entry["url"] = f"{self.base_ticket_url}{ticket_id}"

@@ -112,19 +112,31 @@ def process_and_load():
     all_chunk_indexes = []
     all_subjects = []
     all_payloads = []
+    all_last_activity_ts = []
 
     print("🔍 Fetching and Grouping Ticket Threads...")
     cursor.execute("""
-        SELECT t.ticket_id, t.number, c.subject, e.body, e.poster
-        FROM ost_ticket t
-        JOIN ost_ticket__cdata c ON t.ticket_id = c.ticket_id
-        JOIN ost_thread th ON t.ticket_id = th.object_id
-        JOIN ost_thread_entry e ON th.id = e.thread_id
-        WHERE th.object_type = 'T' AND e.body != ''
-        ORDER BY t.ticket_id, e.created ASC
+    SELECT
+        t.ticket_id,
+        t.number,
+        c.subject,
+        e.body,
+        e.poster,
+        UNIX_TIMESTAMP(COALESCE(e.created)) AS activity_ts
+    FROM ost_ticket t
+    JOIN ost_ticket__cdata c ON t.ticket_id = c.ticket_id
+    JOIN ost_thread th ON t.ticket_id = th.object_id
+    JOIN ost_thread_entry e ON th.id = e.thread_id
+    WHERE th.object_type = 'T' AND e.body != ''
+    ORDER BY t.ticket_id, e.created ASC
     """)
 
-    tickets_data = defaultdict(lambda: {"subject": "", "ticket_number": "", "full_thread": ""})
+    tickets_data = defaultdict(lambda: {
+        "subject": "",
+        "ticket_number": "",
+        "full_thread": "",
+        "last_activity_ts": 0,
+    })
 
     for row in cursor.fetchall():
         subject = row.get('subject') or ""
@@ -142,7 +154,12 @@ def process_and_load():
             tickets_data[t_id]["subject"] = subject
             tickets_data[t_id]["ticket_number"] = t_number
             tickets_data[t_id]["full_thread"] = f"Subject: {subject}\n"
+        # Append post text
         tickets_data[t_id]["full_thread"] += f"\n--- Post by {row.get('poster')} ---\n{body_clean}\n"
+        # Track last activity timestamp (max)
+        ts = int(row.get("activity_ts") or 0)
+        if ts > tickets_data[t_id]["last_activity_ts"]:
+            tickets_data[t_id]["last_activity_ts"] = ts
 
     # Tickets -> chunks
     for t_id, data in tickets_data.items():
@@ -159,7 +176,7 @@ def process_and_load():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(subject)
             all_payloads.append(chunk)
-
+            all_last_activity_ts.append(data["last_activity_ts"])
     # FAQs -> chunks
     cursor.execute("SELECT faq_id, question, answer FROM ost_faq WHERE ispublished = 1")
     for row in cursor.fetchall():
@@ -177,6 +194,7 @@ def process_and_load():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(question)
             all_payloads.append(chunk)
+            all_last_activity_ts.append(0)
 
     if not all_payloads:
         print("No payloads to embed/insert.")
@@ -199,9 +217,11 @@ def process_and_load():
         all_chunk_indexes,
         all_subjects,
         all_payloads,
+        all_last_activity_ts,
         all_vectors,
     ]
 
+    assert len(all_payloads) == len(all_last_activity_ts)
     collection.insert(data)
     collection.flush()
     print(f"Success! Total Entities in Milvus: {collection.num_entities}")

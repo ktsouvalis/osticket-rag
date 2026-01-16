@@ -88,6 +88,7 @@ def search_and_fetch(collection: Collection, client: Client, cursor, query_text:
             "chunk_index",
             "subject",
             "text_payload",
+            "last_activity_ts",
         ],
     )
 
@@ -104,6 +105,7 @@ def search_and_fetch(collection: Collection, client: Client, cursor, query_text:
             chunk_index = ent.get("chunk_index")
             subject = ent.get("subject") or ""
             payload = ent.get("text_payload") or ""
+            last_ts = ent.get("last_activity_ts")
             score = float(hit.distance)
 
             print("\n" + "=" * 90)
@@ -113,7 +115,7 @@ def search_and_fetch(collection: Collection, client: Client, cursor, query_text:
                 print(f"Subject: {subject}")
 
             if base_ticket_url and isinstance(ticket_id, int) and ticket_id < 100000 and (source_type or "").lower() == "ticket":
-                print(f"URL: {base_ticket_url}{ticket_id}")
+                print(f"URL: {base_ticket_url}{ticket_id} (Last activity: {last_ts})")
 
             print("-" * 35 + " MILVUS CHUNK " + "-" * 35)
             print(payload)

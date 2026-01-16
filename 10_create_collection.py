@@ -27,6 +27,7 @@ fields = [
     # Content
     FieldSchema(name="subject", dtype=DataType.VARCHAR, max_length=512),
     FieldSchema(name="text_payload", dtype=DataType.VARCHAR, max_length=65535),
+    FieldSchema(name="last_activity_ts", dtype=DataType.INT64),
 
     # Embedding
     FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=1024),
