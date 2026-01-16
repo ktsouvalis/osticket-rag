@@ -2,9 +2,8 @@ import os
 import logging
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-
 from rag_core import RagEngine
-
+from translation_service import send_to_translation_service
 app = FastAPI(title="osTicket RAG API", version="1.0")
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -32,17 +31,18 @@ def health():
 
 
 @app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+def ask(req: AskRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key"), translate: bool = False):
     if API_KEY:
         if not x_api_key or x_api_key != API_KEY:
             raise HTTPException(status_code=401, detail="Invalid API key")
-
     q = (req.query or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="Empty query")
 
     try:
         answer_text = ENGINE.answer(q)
+        if translate:
+            answer_text = send_to_translation_service(answer_text)
         return AskResponse(answer=answer_text)
     except Exception as exc:
         logger.exception("/ask failed")

@@ -585,8 +585,19 @@
 #     run_rag_cycle(user_input)
 
 from rag_core import RagEngine
+from translation_service import send_to_translation_service
+import argparse
+
+
+
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="RAG Answer CLI")
+    parser.add_argument("--translate", action="store_true", help="Translate the answer to Greek")
+    args = parser.parse_args()
     engine = RagEngine()
     user_input = input("How can I help you today? ")
-    print(engine.answer(user_input))
+    answer = engine.answer(user_input)
+    if args.translate:
+        answer = send_to_translation_service(answer)
+    print("\n" + answer)
