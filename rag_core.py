@@ -41,6 +41,31 @@ def _ensure_vector_batch(embeddings):
     return embeddings
 
 
+def _get_collection_vector_dim(collection: Collection) -> int:
+    for field in collection.schema.fields:
+        if field.name == "vector":
+            dim = None
+            if hasattr(field, "params"):
+                dim = field.params.get("dim")
+            if not dim and hasattr(field, "type_params"):
+                dim = field.type_params.get("dim")
+            if dim is None:
+                raise RuntimeError("Collection vector field missing dim in schema.")
+            return int(dim)
+    raise RuntimeError("Collection schema missing vector field.")
+
+
+def _ensure_embedding_dim(client: Client, model: str, collection: Collection) -> None:
+    resp = client.embed(model=model, input="dim probe")
+    embs = _ensure_vector_batch(resp.get("embeddings"))
+    if not embs:
+        raise RuntimeError("Embedding probe failed: no embeddings returned.")
+    vec = embs[0]
+    dim = _get_collection_vector_dim(collection)
+    if len(vec) != dim:
+        raise RuntimeError(f"Embedding dim {len(vec)} does not match collection dim {dim} for model '{model}'.")
+
+
 def _escape_milvus_str(value: str) -> str:
     return (value or "").replace("\\", "\\\\").replace("'", "\\'")
 
@@ -190,6 +215,7 @@ class RagEngine:
         connections.connect(host=self.server_ip, port="19530")
         self.collection = Collection(collection_name)
         self.collection.load()
+        _ensure_embedding_dim(self.ollama, self.embed_model, self.collection)
 
     def fetch_chunks_by_indices(self, ticket_id: int, source_type: str, indices: list[int]):
         if ticket_id is None or not indices:

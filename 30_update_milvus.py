@@ -92,6 +92,31 @@ def get_embeddings_from_ollama(client: Client, model: str, texts: list[str]) -> 
     return embs
 
 
+def get_collection_vector_dim(collection_obj: Collection) -> int:
+    for field in collection_obj.schema.fields:
+        if field.name == "vector":
+            dim = None
+            if hasattr(field, "params"):
+                dim = field.params.get("dim")
+            if not dim and hasattr(field, "type_params"):
+                dim = field.type_params.get("dim")
+            if dim is None:
+                raise RuntimeError("Collection vector field missing dim in schema.")
+            return int(dim)
+    raise RuntimeError("Collection schema missing vector field.")
+
+
+def ensure_embedding_dim(client_obj: Client, model: str, collection_obj: Collection) -> None:
+    resp = client_obj.embed(model=model, input="dim probe")
+    embs = ensure_vector_batch(resp.get("embeddings"))
+    if not embs:
+        raise RuntimeError("Embedding probe failed: no embeddings returned.")
+    vec = embs[0]
+    dim = get_collection_vector_dim(collection_obj)
+    if len(vec) != dim:
+        raise RuntimeError(f"Embedding dim {len(vec)} does not match collection dim {dim} for model '{model}'.")
+
+
 def _escape_milvus_str(value: str) -> str:
     return (value or "").replace("\\", "\\\\").replace("'", "\\'")
 
@@ -142,7 +167,6 @@ def main():
 
     state = load_state(args.state_file)
     last_activity_ts = int(args.since_ts) if args.since_ts is not None else int(state.get("last_activity_ts", 0))
-    run_started_ts = int(time.time())
 
     last_faq_id = int(args.since_faq_id) if args.since_faq_id is not None else int(state.get("last_faq_id", 0))
 
@@ -158,6 +182,9 @@ def main():
     print(f"🔌 Connecting Milvus @ {server_ip}:19530 ...")
     connections.connect(host=server_ip, port="19530")
     collection = Collection(collection_name)
+    collection.load()
+    ollama = Client(host=f"http://{server_ip}:11434")
+    ensure_embedding_dim(ollama, embed_model, collection)
 
     print(f"🔌 Connecting MySQL @ {mysql_host} ...")
     db = mysql.connector.connect(
@@ -168,7 +195,6 @@ def main():
     )
     cursor = db.cursor(dictionary=True)
 
-    ollama = Client(host=f"http://{server_ip}:11434")
     print(f"📥 Using Ollama model '{embed_model}' for embeddings...")
     print(f"🕒 Delta watermark: last_activity_ts={last_activity_ts} (unix)")
 
@@ -218,7 +244,8 @@ def main():
     if not ticket_ids_to_process:
         print("✅ No new/updated tickets since watermark.")
         # advance watermark (prevents re-scanning same time window)
-        state["last_activity_ts"] = run_started_ts
+        run_finished_ts = int(time.time())
+        state["last_activity_ts"] = max(run_finished_ts, max_seen_activity_ts)
         save_state(args.state_file, state)
         print(f"🧾 State updated: last_activity_ts={state['last_activity_ts']}")
         return
@@ -319,7 +346,8 @@ def main():
 
     if not all_payloads:
         print("No chunks to insert after filtering/cleaning.")
-        state["last_activity_ts"] = max(run_started_ts, max_seen_activity_ts)
+        run_finished_ts = int(time.time())
+        state["last_activity_ts"] = max(run_finished_ts, max_seen_activity_ts)
         if args.include_faq:
             state["last_faq_id"] = int(max_seen_faq_id)
         save_state(args.state_file, state)
@@ -358,7 +386,8 @@ def main():
     collection.flush()
 
     # Update state only after successful flush
-    state["last_activity_ts"] = max(run_started_ts, max_seen_activity_ts)
+    run_finished_ts = int(time.time())
+    state["last_activity_ts"] = max(run_finished_ts, max_seen_activity_ts)
     if args.include_faq:
         state["last_faq_id"] = int(max_seen_faq_id)
     save_state(args.state_file, state)

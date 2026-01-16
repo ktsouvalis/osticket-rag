@@ -17,12 +17,35 @@ load_dotenv()
 SERVER_IP = os.getenv('SERVER_IP')
 
 client = Client(host=f"http://{SERVER_IP}:11434")
-EMBED_MODEL = "bge-m3"
+EMBED_MODEL = os.getenv("EMBED_MODEL_NAME", "bge-m3")
+def get_collection_vector_dim(collection_obj: Collection) -> int:
+    for field in collection_obj.schema.fields:
+        if field.name == "vector":
+            dim = None
+            if hasattr(field, "params"):
+                dim = field.params.get("dim")
+            if not dim and hasattr(field, "type_params"):
+                dim = field.type_params.get("dim")
+            if dim is None:
+                raise RuntimeError("Collection vector field missing dim in schema.")
+            return int(dim)
+    raise RuntimeError("Collection schema missing vector field.")
+
+def ensure_embedding_dim(client_obj: Client, model: str, collection_obj: Collection) -> None:
+    resp = client_obj.embed(model=model, input="dim probe")
+    embeddings = resp.get("embeddings")
+    if not embeddings:
+        raise RuntimeError("Embedding probe failed: no embeddings returned.")
+    vec = embeddings if isinstance(embeddings[0], float) else embeddings[0]
+    dim = get_collection_vector_dim(collection_obj)
+    if len(vec) != dim:
+        raise RuntimeError(f"Embedding dim {len(vec)} does not match collection dim {dim} for model '{model}'.")
 
 print(f"Using Ollama model '{EMBED_MODEL}' for embeddings...")
 
 connections.connect(host=SERVER_IP, port='19530')
 collection = Collection("osticket_knowledge")
+ensure_embedding_dim(client, EMBED_MODEL, collection)
 
 db = mysql.connector.connect(
     host=os.getenv("MYSQL_HOST"),
