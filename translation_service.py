@@ -28,7 +28,7 @@ def _translate_block(client: Client, model: str, text: str) -> str:
     if not text.strip():
         return text
     prompt = (
-        "Translate the following text to Greek. Preserve code blocks and URLs "
+        "Translate the following text to Greek. Preserve code blocks and URLs, technical terms, "
         "exactly as written. Return only the translated text.\n\n"
         f"TEXT:\n{text}"
     )
