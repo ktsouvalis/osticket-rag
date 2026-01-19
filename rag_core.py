@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from ollama import Client
 from pymilvus import Collection, connections
-
+import unicodedata
 
 # Heuristic to detect “broad / whole process / list all” questions
 BROAD_QUERY_RE = re.compile(
@@ -174,6 +174,50 @@ def pick_chunk_indices_for_doc(items, *, top_unique: int, neighbor_window: int, 
     idxs = sorted(expanded)
     return idxs[:max_total]
 
+def _norm_el(s: str) -> str:
+    """Greek-friendly normalization: casefold + remove accents/diacritics."""
+    s = (s or "").casefold()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")  # strip accents
+    return s
+
+def _is_entity_like_query(q: str) -> bool:
+    """
+    Heuristic: enable keyword boost mostly for names/devices/ids:
+    - contains digits (IPs, VLANs, ticket numbers, versions)
+    - contains separators typical of hostnames/ids: '.', '-', '_', ':'
+    - or looks like 2-4 word phrase (e.g. 'konstantinos tsouvalis', 'synodos107 uop')
+    """
+    q0 = (q or "").strip()
+    if not q0:
+        return False
+    qn = _norm_el(q0)
+
+    if any(ch.isdigit() for ch in q0):
+        return True
+    if any(sep in q0 for sep in [".", "-", "_", ":", "/"]):
+        return True
+
+    # 2–4 tokens tends to be "entity-ish" (names/devices). Very long queries are usually semantic.
+    toks = [t for t in re.split(r"\s+", qn) if t]
+    if 2 <= len(toks) <= 4:
+        return True
+
+    return False
+
+def _keyword_boost_score(query: str, subject: str, payload: str, boost_value: float) -> float:
+    """
+    Simple substring match after normalization.
+    Returns boost_value if match is found in subject or payload.
+    """
+    qn = _norm_el(query)
+    if not qn:
+        return 0.0
+    sn = _norm_el(subject)
+    pn = _norm_el(payload)
+    if qn and (qn in sn or qn in pn):
+        return boost_value
+    return 0.0
 
 class RagEngine:
     def __init__(
@@ -199,6 +243,8 @@ class RagEngine:
         self.nprobe = int(os.getenv("RAG_NPROBE", "10"))
         self.score_tie_epsilon = float(os.getenv("RAG_SCORE_TIE_EPSILON", "0.003"))
         self.recency_boost_weight = float(os.getenv("RAG_RECENCY_BOOST_WEIGHT", "0.0"))
+        self.enable_keyword_boost = os.getenv("RAG_ENABLE_KEYWORD_BOOST", "1") == "1"
+        self.keyword_boost_value = float(os.getenv("RAG_KEYWORD_BOOST_VALUE", "0.15"))
 
 
         # Broad-query adaptation
@@ -326,7 +372,8 @@ class RagEngine:
         hits = hits[: self.vlan_enum_max_results]
 
         evidence = defaultdict(list)
-        for score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload, last_activity_ts in hits:
+        for score, pk, ticket_id, ticket_number, source_type, chunk_index, *_rest in hits:
+            payload = _rest[0]
             vids = extract_vlan_ids(payload)
             if not vids:
                 continue
@@ -401,6 +448,9 @@ class RagEngine:
         )
 
         hits_by_doc = defaultdict(list)
+        kw_boost_by_doc = defaultdict(float)
+        use_kw = self.enable_keyword_boost and _is_entity_like_query(user_query)
+
         for hits in search_results:
             for hit in hits:
                 ent = hit.entity
@@ -421,6 +471,11 @@ class RagEngine:
                 hits_by_doc[doc_key].append(
                     (score, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload, last_activity_ts)
                 )
+                if use_kw:
+                    b = _keyword_boost_score(user_query, subject, payload, self.keyword_boost_value)
+                    if b > kw_boost_by_doc[doc_key]:
+                        kw_boost_by_doc[doc_key] = b
+
 
         eps = getattr(self, "score_tie_epsilon", 0.003)
 
@@ -436,12 +491,17 @@ class RagEngine:
             # last_ts is the last element in our tuple
             return max((item[-1] or 0) for item in items)
 
+        def final_doc_score(doc_key: str, items) -> float:
+            base = doc_score(items)
+            if use_kw:
+                base += float(kw_boost_by_doc.get(doc_key, 0.0))
+            return base
+
         ranked_docs = sorted(
             hits_by_doc.items(),
-            key=lambda kv: (round(doc_score(kv[1]) / eps) * eps, doc_last_ts(kv[1])),
+            key=lambda kv: (final_doc_score(kv[0], kv[1]), doc_last_ts(kv[1])),
             reverse=True,
         )
-
 
         total_chars = 0
         results = []
@@ -451,7 +511,11 @@ class RagEngine:
                 continue
 
             best = max(all_items_for_doc, key=lambda x: x[0])
-            top_score, _pk, ticket_id, ticket_number, source_type, _chunk_index, subject, _payload, _last_activity_ts = best
+            top_score = best[0]
+            ticket_id = best[2]
+            ticket_number = best[3]
+            source_type = best[4]
+            subject = best[6]
 
             wanted_idxs = pick_chunk_indices_for_doc(
                 all_items_for_doc,
