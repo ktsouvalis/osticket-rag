@@ -11,9 +11,13 @@ from dotenv import load_dotenv
 import os
 import re
 import hashlib
+import json
+import time
+import errno
 from collections import defaultdict
 
 # 1. Setup
+STATE_FILE_DEFAULT = ".milvus_update_state.json"
 load_dotenv()
 SERVER_IP = os.getenv('SERVER_IP')
 
@@ -116,6 +120,20 @@ def build_insert_data(collection_obj, field_data: dict[str, list]) -> list[list]
         data.append(field_data[field.name])
     return data
 
+
+def save_state(path: str, state: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
+    try:
+        os.replace(tmp, path)
+    except OSError as exc:
+        if exc.errno != errno.EBUSY:
+            raise
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+        os.remove(tmp)
+
 def get_embeddings_from_ollama(texts):
     response = client.embed(model=EMBED_MODEL, input=texts)
     return response['embeddings']
@@ -180,9 +198,11 @@ def process_and_load():
             all_pks.append(stable_int64(f"ticket:{t_id}:{chunk_index}"))
 
     # FAQs -> chunks
+    max_seen_faq_id = 0
     cursor.execute("SELECT faq_id, question, answer FROM ost_faq WHERE ispublished = 1")
     for row in cursor.fetchall():
         faq_id = int(row["faq_id"])
+        max_seen_faq_id = max(max_seen_faq_id, faq_id)
         question = row.get("question") or ""
         answer = clean_text(row.get("answer"))
 
@@ -227,6 +247,28 @@ def process_and_load():
     collection.insert(data)
     collection.flush()
     print(f"Success! Total Entities in Milvus: {collection.num_entities}")
+    cursor.execute(
+        """
+        SELECT UNIX_TIMESTAMP(MAX(ts)) AS max_activity_ts
+        FROM (
+            SELECT updated AS ts FROM ost_ticket
+            UNION ALL
+            SELECT lastupdate AS ts FROM ost_ticket WHERE lastupdate IS NOT NULL
+            UNION ALL
+            SELECT updated AS ts FROM ost_thread_entry
+            UNION ALL
+            SELECT created AS ts FROM ost_thread_entry
+        ) x
+        """
+    )
+    row = cursor.fetchone() or {}
+    max_activity_ts = int(row.get("max_activity_ts") or 0)
+    state = {
+        "last_activity_ts": max(int(time.time()), max_activity_ts),
+        "last_faq_id": int(max_seen_faq_id),
+    }
+    save_state(STATE_FILE_DEFAULT, state)
+    print(f"State updated: last_activity_ts={state['last_activity_ts']}, last_faq_id={state['last_faq_id']}")
 
 if __name__ == "__main__":
     process_and_load()

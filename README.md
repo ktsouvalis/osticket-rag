@@ -24,6 +24,7 @@ This repo is intentionally split into:
   - Full ingestion (first run / rebuild)
   - Loads all ticket threads + published FAQs from osTicket DB
   - Redacts common secrets **before** embedding and inserting
+  - Initializes `.milvus_update_state.json` for the incremental updater
 
 - `30_update_milvus.py`
   - Incremental updater
@@ -123,6 +124,8 @@ Then set `RESET_COLLECTION=0` again.
 conda activate osticket-rag
 python 20_load_to_milvus.py
 ```
+
+This also initializes `.milvus_update_state.json` so the incremental updater starts from the current watermark.
 
 ### C) Incremental update (new or updated tickets)
 
