@@ -4,16 +4,15 @@ import os
 
 load_dotenv()
 SERVER_IP = os.getenv("SERVER_IP")
-RESET_COLLECTION = os.getenv("RESET_COLLECTION", "0") == "1"
 
 connections.connect(host=SERVER_IP, port="19530")
 
 collection_name = "osticket_knowledge"
 
 # Drop only when explicitly requested
-if RESET_COLLECTION and utility.has_collection(collection_name):
+if utility.has_collection(collection_name):
     utility.drop_collection(collection_name)
-    print("Dropped existing collection (RESET_COLLECTION=1).")
+    print("Dropped existing collection.")
 
 fields = [
     FieldSchema(name="pk", dtype=DataType.INT64, is_primary=True, auto_id=True),

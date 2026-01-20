@@ -94,7 +94,6 @@ Fill in `.env`:
 - `MYSQL_PASSWORD=`
 - `MYSQL_DATABASE=`
 - `BASE_TICKET_URL=` (example: `https://patra-helpdesk.uop.gr/scp/tickets.php?id=`)
-- `RESET_COLLECTION=` (`0` or `1`)
 
 Optional:
 - `EMBED_MODEL_NAME=bge-m3`
@@ -112,17 +111,12 @@ Flow summary:
 
 ### A) Create / reset collection
 
-To recreate from scratch:
-
-1. Set `RESET_COLLECTION=1` in `.env`
-2. Run:
+To recreate from scratch run:
 
 ```bash
 conda activate osticket-rag
 python 10_create_collection.py
 ```
-
-Then set `RESET_COLLECTION=0` again.
 
 ### B) Initial full load
 
@@ -295,7 +289,7 @@ Use `GET /ask` and send header `X-API-Key` if `RAG_API_KEY` is set.
 
 - Vector search uses `metric_type = COSINE` to match the collection index.
 - If you change embedding model or embedding dimension, you must reset and rebuild:
-  - `10_create_collection.py` (with `RESET_COLLECTION=1`)
+  - `10_create_collection.py`
   - `20_load_to_milvus.py`
 
 ---
