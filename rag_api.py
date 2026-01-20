@@ -1,6 +1,6 @@
 import os
 import logging
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 from rag_core import RagEngine
 from translation_service import send_to_translation_service
@@ -17,10 +17,6 @@ ENGINE = RagEngine()
 API_KEY = (os.getenv("RAG_API_KEY") or "").strip()
 
 
-class AskRequest(BaseModel):
-    query: str
-
-
 class AskResponse(BaseModel):
     answer: str
 
@@ -30,12 +26,16 @@ def health():
     return {"ok": True}
 
 
-@app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key"), translate: bool = False):
+@app.get("/ask", response_model=AskResponse)
+def ask(
+    query: str = Query(..., min_length=1, description="Search query"),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    translate: bool = False,
+):
     if API_KEY:
         if not x_api_key or x_api_key != API_KEY:
             raise HTTPException(status_code=401, detail="Invalid API key")
-    q = (req.query or "").strip()
+    q = (query or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="Empty query")
 
