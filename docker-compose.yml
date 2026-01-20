@@ -23,3 +23,21 @@ services:
     command: ["python", "30_update_milvus.py"]
     profiles: ["manual"]
     restart: "no"
+
+  rag-create-collection:
+    build: .
+    container_name: osticket-rag-create-collection
+    env_file:
+      - .env
+    command: ["python", "10_create_collection.py"]
+    profiles: ["manual"]
+    restart: "no"
+
+  rag-load-initial:
+    build: .
+    container_name: osticket-rag-load-initial
+    env_file:
+      - .env
+    command: ["python", "20_load_to_milvus.py"]
+    profiles: ["manual"]
+    restart: "no"

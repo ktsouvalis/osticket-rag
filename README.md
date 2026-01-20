@@ -29,7 +29,7 @@ This repo is intentionally split into:
   - Incremental updater
   - Detects tickets with activity after a saved watermark (`last_activity_ts`)
   - Deletes + reinserts only those tickets in Milvus
-  - Keeps state in `.milvus_update_state.json`
+  - Keeps state in `.milvus_update_state.json` (persisted via Docker volume)
 
 - `rag_core.py`
   - `RagEngine.retrieve_related(query: str) -> list[dict]`
@@ -217,6 +217,22 @@ Run on-demand (one-off container):
 
 ```bash
 docker compose --profile manual run --rm rag-updater
+```
+
+State persistence:
+
+- `.milvus_update_state.json` is bind-mounted into the updater container, so the watermark survives container recreation.
+
+### 3b) Create/reset collection (`10_create_collection.py`)
+
+```bash
+docker compose --profile manual run --rm rag-create-collection
+```
+
+### 3c) Initial full load (`20_load_to_milvus.py`)
+
+```bash
+docker compose --profile manual run --rm rag-load-initial
 ```
 
 Scheduling options:
