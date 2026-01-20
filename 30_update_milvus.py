@@ -4,6 +4,7 @@
 
 import argparse
 import json
+import hashlib
 import os
 import re
 import time
@@ -115,6 +116,22 @@ def ensure_embedding_dim(client_obj: Client, model: str, collection_obj: Collect
     dim = get_collection_vector_dim(collection_obj)
     if len(vec) != dim:
         raise RuntimeError(f"Embedding dim {len(vec)} does not match collection dim {dim} for model '{model}'.")
+
+
+def stable_int64(value: str) -> int:
+    digest = hashlib.sha256(value.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
+
+
+def build_insert_data(collection_obj: Collection, field_data: dict[str, list]) -> list[list]:
+    data = []
+    for field in collection_obj.schema.fields:
+        if getattr(field, "auto_id", False):
+            continue
+        if field.name not in field_data:
+            raise RuntimeError(f"Missing data for field '{field.name}' required by collection schema.")
+        data.append(field_data[field.name])
+    return data
 
 
 def _escape_milvus_str(value: str) -> str:
@@ -297,6 +314,7 @@ def main():
     all_chunk_indexes = []
     all_subjects = []
     all_payloads = []
+    all_pks = []
 
     for t_id, data in tickets_data.items():
         t_number = data["ticket_number"] or str(t_id)
@@ -311,6 +329,7 @@ def main():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(subject)
             all_payloads.append(chunk)
+            all_pks.append(stable_int64(f"ticket:{t_id}:{chunk_index}"))
 
     # 3) Optional FAQ incremental (ID-based, unchanged)
     max_seen_faq_id = last_faq_id
@@ -343,6 +362,7 @@ def main():
                 all_chunk_indexes.append(int(chunk_index))
                 all_subjects.append(question)
                 all_payloads.append(chunk)
+                all_pks.append(stable_int64(f"faq:{faq_id}:{chunk_index}"))
 
     if not all_payloads:
         print("No chunks to insert after filtering/cleaning.")
@@ -371,15 +391,17 @@ def main():
     # UPDATE semantics: delete existing ticket vectors, then insert rebuilt vectors
     delete_ticket_rows_bulk(collection, ticket_ids=list(tickets_data.keys()), source_type="ticket")
 
-    data = [
-        all_ticket_ids,
-        all_ticket_numbers,
-        all_source_types,
-        all_chunk_indexes,
-        all_subjects,
-        all_payloads,
-        all_vectors,
-    ]
+    field_data = {
+        "pk": all_pks,
+        "ticket_id": all_ticket_ids,
+        "ticket_number": all_ticket_numbers,
+        "source_type": all_source_types,
+        "chunk_index": all_chunk_indexes,
+        "subject": all_subjects,
+        "text_payload": all_payloads,
+        "vector": all_vectors,
+    }
+    data = build_insert_data(collection, field_data)
 
     print("Inserting into Milvus...")
     collection.insert(data)

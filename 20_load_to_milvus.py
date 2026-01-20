@@ -10,6 +10,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 import os
 import re
+import hashlib
 from collections import defaultdict
 
 # 1. Setup
@@ -99,6 +100,22 @@ def redact_secrets(text: str) -> str:
     redacted = re.sub(patterns[2], r"\1[REDACTED]", redacted)
     return redacted
 
+
+def stable_int64(value: str) -> int:
+    digest = hashlib.sha256(value.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
+
+
+def build_insert_data(collection_obj, field_data: dict[str, list]) -> list[list]:
+    data = []
+    for field in collection_obj.schema.fields:
+        if getattr(field, "auto_id", False):
+            continue
+        if field.name not in field_data:
+            raise RuntimeError(f"Missing data for field '{field.name}' required by collection schema.")
+        data.append(field_data[field.name])
+    return data
+
 def get_embeddings_from_ollama(texts):
     response = client.embed(model=EMBED_MODEL, input=texts)
     return response['embeddings']
@@ -112,6 +129,7 @@ def process_and_load():
     all_chunk_indexes = []
     all_subjects = []
     all_payloads = []
+    all_pks = []
 
     print("🔍 Fetching and Grouping Ticket Threads...")
     cursor.execute("""
@@ -159,6 +177,7 @@ def process_and_load():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(subject)
             all_payloads.append(chunk)
+            all_pks.append(stable_int64(f"ticket:{t_id}:{chunk_index}"))
 
     # FAQs -> chunks
     cursor.execute("SELECT faq_id, question, answer FROM ost_faq WHERE ispublished = 1")
@@ -177,6 +196,7 @@ def process_and_load():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(question)
             all_payloads.append(chunk)
+            all_pks.append(stable_int64(f"faq:{faq_id}:{chunk_index}"))
 
     if not all_payloads:
         print("No payloads to embed/insert.")
@@ -192,15 +212,17 @@ def process_and_load():
         all_vectors.extend(vectors)
         print(f"Processed {min(i + batch_size, len(all_payloads))}/{len(all_payloads)}...")
 
-    data = [
-        all_ticket_ids,
-        all_ticket_numbers,
-        all_source_types,
-        all_chunk_indexes,
-        all_subjects,
-        all_payloads,
-        all_vectors,
-    ]
+    field_data = {
+        "pk": all_pks,
+        "ticket_id": all_ticket_ids,
+        "ticket_number": all_ticket_numbers,
+        "source_type": all_source_types,
+        "chunk_index": all_chunk_indexes,
+        "subject": all_subjects,
+        "text_payload": all_payloads,
+        "vector": all_vectors,
+    }
+    data = build_insert_data(collection, field_data)
 
     collection.insert(data)
     collection.flush()
