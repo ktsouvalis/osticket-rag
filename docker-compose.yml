@@ -18,6 +18,8 @@ services:
     container_name: osticket-rag-updater
     env_file:
       - .env
+    volumes:
+      - ./.milvus_update_state.json:/app/.milvus_update_state.json
     command: ["python", "30_update_milvus.py"]
     profiles: ["manual"]
     restart: "no"
