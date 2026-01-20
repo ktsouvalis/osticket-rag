@@ -134,11 +134,17 @@ def save_state(path: str, state: dict) -> None:
             json.dump(state, f, indent=2, sort_keys=True)
         os.remove(tmp)
 
+def ensure_state_file(path: str) -> None:
+    if os.path.exists(path):
+        return
+    save_state(path, {"last_activity_ts": 0, "last_faq_id": 0})
+
 def get_embeddings_from_ollama(texts):
     response = client.embed(model=EMBED_MODEL, input=texts)
     return response['embeddings']
 
 def process_and_load():
+    ensure_state_file(STATE_FILE_DEFAULT)
     # Must match schema order (excluding pk auto_id):
     # ticket_id, ticket_number, source_type, chunk_index, subject, text_payload, vector
     all_ticket_ids = []

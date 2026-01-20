@@ -9,7 +9,7 @@ RAG pipeline for querying an **osTicket** knowledge base (tickets + FAQs) using:
 This repo is intentionally split into:
 - **Control scripts** (create collection, full load, incremental updates)
 - A reusable **RAG engine** (`rag_core.py`) that returns related tickets (usable from CLI or API)
-- A small **HTTP API** (`50_rag_api.py`) to integrate as a Tool in Open WebUI
+- A small **HTTP API** (`rag_api.py`) to integrate as a Tool in Open WebUI
 
 ---
 
@@ -37,11 +37,11 @@ This repo is intentionally split into:
   - Uses Milvus chunk retrieval + neighbor chunk expansion
   - Returns related tickets only (no ticket content, no LLM answer)
 
-- `40_rag_answer.py`
+- `rag_cli.py`
   - CLI runner (interactive).
   - Prints related ticket number, subject, and URL
 
-- `50_rag_api.py`
+- `rag_api.py`
   - FastAPI wrapper around `rag_core.RagEngine`
   - Endpoints:
     - `GET /health`
@@ -168,16 +168,9 @@ Test:
 ```bash
 curl -s http://localhost:8000/health
 
-curl -s -X POST http://localhost:8000/ask \
-  -H 'X-API-Key: your-key' \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"install gitea on-prem"}'
-```
-
-If you set `RAG_API_KEY`, include:
-
-```bash
--H 'X-API-Key: your-key'
+curl -G "http://localhost:8000/ask" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  --data-urlencode "query=your search here"
 ```
 
 ---
@@ -192,7 +185,6 @@ This is the recommended way to run the API on an app server while **Milvus + Oll
 git clone https://github.com/<YOU>/<REPO>.git
 cd <REPO>
 cp .env.example .env
-echo '{"last_activity_ts": 0, "last_faq_id": 0}' > .milvus_update_state.json
 ```
 
 Set at least:
@@ -201,15 +193,19 @@ Set at least:
 - `MYSQL_HOST=`, `MYSQL_USER=`, `MYSQL_PASSWORD=`, `MYSQL_DATABASE=`
 - `RAG_API_KEY=` (recommended)
 
-### 2) Start the API container
-
-With Docker Compose (or a Portainer Stack using `docker-compose.yml`):
-
+### 2) Create the Milvus collection
 ```bash
-docker compose up -d --build rag-api
+make create-collection
 ```
 
-With Makefile (optional):
+### 3) Initial full load
+```bash
+make load-initial
+```
+
+### 4) Start the API container
+
+With Docker Compose (or a Portainer Stack using `docker-compose.yml`):
 
 ```bash
 make api-up
@@ -221,67 +217,22 @@ Healthcheck:
 curl -s http://localhost:8000/health
 ```
 
-### 3) Run incremental updates (`30_update_milvus.py`)
+### 5) Run incremental updates
 
 Run on-demand (one-off container):
-
-```bash
-docker compose --profile manual run --rm rag-updater
-```
-
-With Makefile (optional):
 
 ```bash
 make update
 ```
 
-Initialize state file (first-time setup):
-
-```bash
-make init-state
-```
-
 State persistence:
 
-- The updater stores its watermark in `/app/.milvus_update_state.json`, and `./.milvus_update_state.json` is bind-mounted into the container so it survives recreation.
-- Ensure the file exists before running the updater: `touch .milvus_update_state.json`
-
-### 3b) Create/reset collection (`10_create_collection.py`)
-
-```bash
-docker compose --profile manual run --rm rag-create-collection
-```
-
-With Makefile (optional):
-
-```bash
-make create-collection
-```
-
-### 3c) Initial full load (`20_load_to_milvus.py`)
-
-```bash
-docker compose --profile manual run --rm rag-load-initial
-```
-
-With Makefile (optional):
-
-```bash
-make load-initial
-```
+- The initial loader and the updater store their watermark in `/app/.milvus_update_state.json`, and `./.milvus_update_state.json` is bind-mounted into the container so it survives recreation.
 
 Scheduling options:
 
 - **Host cron** (simple/reliable): run the command above every X minutes.
 - **Portainer scheduled job** (if enabled): run the same container command.
-
-### 4) Open WebUI (on GPU server) → Tool calls to app server
-
-Point the Tool base URL to:
-
-- `http://Server_IP:8000`
-
-Use `GET /ask` and send header `X-API-Key` if `RAG_API_KEY` is set.
 
 ---
 
