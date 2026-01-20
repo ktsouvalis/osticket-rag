@@ -104,6 +104,12 @@ Optional:
 
 ## Milvus workflow
 
+Flow summary:
+
+1. `10_create_collection.py` only when you need a clean rebuild (schema/model changes).
+2. `20_load_to_milvus.py` once after a clean rebuild (full load + sets watermark).
+3. `30_update_milvus.py` for regular operations (incremental updates only).
+
 ### A) Create / reset collection
 
 To recreate from scratch:
@@ -149,7 +155,7 @@ State file: `.milvus_update_state.json` (already in `.gitignore`).
 
 ```bash
 conda activate osticket-rag
-python 40_rag_answer.py
+python rag_cli.py
 ```
 
 ---
@@ -160,7 +166,7 @@ Start the API (example port 8000):
 
 ```bash
 conda activate osticket-rag
-uvicorn 50_rag_api:app --host 0.0.0.0 --port 8000
+uvicorn rag_api:app --host 0.0.0.0 --port 8000
 ```
 
 Test:
@@ -209,6 +215,12 @@ With Docker Compose (or a Portainer Stack using `docker-compose.yml`):
 docker compose up -d --build rag-api
 ```
 
+With Makefile (optional):
+
+```bash
+make api-up
+```
+
 Healthcheck:
 
 ```bash
@@ -223,6 +235,18 @@ Run on-demand (one-off container):
 docker compose --profile manual run --rm rag-updater
 ```
 
+With Makefile (optional):
+
+```bash
+make update
+```
+
+Initialize state file (first-time setup):
+
+```bash
+make init-state
+```
+
 State persistence:
 
 - The updater stores its watermark in `/app/.milvus_update_state.json`, and `./.milvus_update_state.json` is bind-mounted into the container so it survives recreation.
@@ -234,10 +258,22 @@ State persistence:
 docker compose --profile manual run --rm rag-create-collection
 ```
 
+With Makefile (optional):
+
+```bash
+make create-collection
+```
+
 ### 3c) Initial full load (`20_load_to_milvus.py`)
 
 ```bash
 docker compose --profile manual run --rm rag-load-initial
+```
+
+With Makefile (optional):
+
+```bash
+make load-initial
 ```
 
 Scheduling options:
@@ -249,9 +285,9 @@ Scheduling options:
 
 Point the Tool base URL to:
 
-- `http://10.23.2.50:8000`
+- `http://Server_IP:8000`
 
-Use `POST /ask` and send header `X-API-Key` if `RAG_API_KEY` is set.
+Use `GET /ask` and send header `X-API-Key` if `RAG_API_KEY` is set.
 
 ---
 
