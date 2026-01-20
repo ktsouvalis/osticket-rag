@@ -189,6 +189,7 @@ This is the recommended way to run the API on an app server while **Milvus + Oll
 git clone https://github.com/<YOU>/<REPO>.git
 cd <REPO>
 cp .env.example .env
+touch .milvus_update_state.json
 ```
 
 Set at least:
@@ -221,7 +222,8 @@ docker compose --profile manual run --rm rag-updater
 
 State persistence:
 
-- `.milvus_update_state.json` is bind-mounted into the updater container, so the watermark survives container recreation.
+- The updater stores its watermark in `/app/.milvus_update_state.json`, and `./.milvus_update_state.json` is bind-mounted into the container so it survives recreation.
+- Ensure the file exists before running the updater: `touch .milvus_update_state.json`
 
 ### 3b) Create/reset collection (`10_create_collection.py`)
 
