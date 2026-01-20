@@ -3,6 +3,7 @@
 # keeps a JSON state (last_activity_ts)
 
 import argparse
+import errno
 import json
 import hashlib
 import os
@@ -36,7 +37,14 @@ def save_state(path: str, state: dict) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except OSError as exc:
+        if exc.errno != errno.EBUSY:
+            raise
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+        os.remove(tmp)
 
 
 def clean_text(html_content):

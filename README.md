@@ -189,7 +189,7 @@ This is the recommended way to run the API on an app server while **Milvus + Oll
 git clone https://github.com/<YOU>/<REPO>.git
 cd <REPO>
 cp .env.example .env
-touch .milvus_update_state.json
+echo '{"last_activity_ts": 0, "last_faq_id": 0}' > .milvus_update_state.json
 ```
 
 Set at least:
