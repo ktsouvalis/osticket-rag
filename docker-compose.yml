@@ -13,6 +13,17 @@ services:
       timeout: 5s
       retries: 3
 
+  rag-checker:
+    build: .
+    container_name: osticket-rag-checker
+    env_file:
+      - .env
+    volumes:
+      - ./.milvus_update_state.json:/app/.milvus_update_state.json
+    command: ["python", "30_update_milvus.py", "--dry-run"]
+    profiles: ["manual"]
+    restart: "no"
+
   rag-updater:
     build: .
     container_name: osticket-rag-updater

@@ -135,9 +135,19 @@ def save_state(path: str, state: dict) -> None:
         os.remove(tmp)
 
 def ensure_state_file(path: str) -> None:
-    if os.path.exists(path):
-        return
-    save_state(path, {"last_activity_ts": 0, "last_faq_id": 0})
+    # If Docker created it as a directory, fix it decisively
+    if os.path.exists(path) and os.path.isdir(path):
+        # Remove the directory and replace it with a file
+        for root, dirs, files in os.walk(path, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        os.rmdir(path)
+
+    # If the file does not exist, create it
+    if not os.path.exists(path):
+        save_state(path, {"last_activity_ts": 0, "last_faq_id": 0})
 
 def get_embeddings_from_ollama(texts):
     response = client.embed(model=EMBED_MODEL, input=texts)
