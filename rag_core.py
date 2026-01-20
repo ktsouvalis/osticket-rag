@@ -1,4 +1,5 @@
 import os
+from pydoc import text
 import re
 from collections import defaultdict
 from typing import Optional
@@ -20,7 +21,11 @@ _TICKETNO_RE = re.compile(r"(\d{3,})")
 
 # Citation extraction from model output:
 # e.g. [src: ticket #000225 chunk:2 pk:123 score:0.8123]
-CITATION_RE = re.compile(r"\[src:\s*([A-Za-z0-9_-]+)\s+#([^\s\]]+)", re.IGNORECASE)
+CITATION_RE = re.compile(
+    r"\[src:\s*([A-Za-z0-9_-]+)\s*#([0-9]{3,})\b",
+    re.IGNORECASE,
+)
+
 
 # VLAN enumeration mode
 ENUM_QUERY_RE = re.compile(
@@ -180,6 +185,23 @@ def _norm_el(s: str) -> str:
     s = unicodedata.normalize("NFD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")  # strip accents
     return s
+
+def _lex_score(query: str, text: str) -> float:
+    qn = _norm_el(query)
+    tn = _norm_el(text)
+
+    toks = [t for t in re.split(r"[^0-9a-zA-Zα-ωΑ-Ω]+", qn) if t]
+    toks = [t for t in toks if len(t) >= 3]
+    if not toks:
+        return 0.0
+
+    hit = 0
+    for t in toks:
+        # word-ish boundary (works ok for Greek/Latin mixed)
+        if re.search(rf"(?<![\w]){re.escape(t)}(?![\w])", tn):
+            hit += 1
+
+    return hit / max(1, len(toks))
 
 def _is_entity_like_query(q: str) -> bool:
     """
@@ -534,15 +556,27 @@ class RagEngine:
             fetched.sort(key=lambda x: (x[5] if isinstance(x[5], int) else 10**9))
 
             used_any = False
+            evidence = []
             for _s, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload, last_activity_ts in fetched:
                 score = score_by_pk.get(pk)
                 score_txt = f"{score:.4f}" if isinstance(score, float) else "n/a"
                 citation = f"[src: {source_type} #{ticket_number} chunk:{chunk_index} pk:{pk} score:{score_txt}]"
+                text = redact_secrets(payload)
+
                 block = f"{citation}\n{redact_secrets(payload)}"
                 if total_chars + len(block) > self.max_context_chars:
                     break
                 total_chars += len(block)
                 used_any = True
+
+                evidence.append({
+                    "pk": int(pk),
+                    "chunk_index": int(chunk_index) if isinstance(chunk_index, int) else chunk_index,
+                    "score": float(score) if isinstance(score, float) else None,
+                    "citation": citation,
+                    "text": text,
+                    "last_activity_ts": int(last_activity_ts) if last_activity_ts else 0,
+                })
 
             if not used_any:
                 continue
@@ -555,8 +589,9 @@ class RagEngine:
                 "subject": subject,
                 "top_score": top_score,
                 "last_activity_ts": int(last_activity_ts) if last_activity_ts else 0,
-
+                "evidence": evidence,
             }
+
             if self.base_ticket_url and source_type == "ticket" and isinstance(ticket_id, int) and ticket_id < 100000:
                 entry["url"] = f"{self.base_ticket_url}{ticket_id}"
             results.append(entry)
@@ -565,3 +600,33 @@ class RagEngine:
                 break
 
         return results
+
+    def query(
+        self,
+        user_query: str,
+        *,
+        include_answer: bool = False,
+        max_docs: Optional[int] = None,
+    ) -> dict:
+        """Return retrieval results only.
+
+        We keep the `include_answer` arg for backward compatibility with your
+        CLI/API, but this implementation **never** calls an LLM.
+        """
+
+        # allow per-call override without changing env
+        if max_docs is not None:
+            old_max_docs = self.max_docs
+            self.max_docs = int(max_docs)
+
+        try:
+            related = self.retrieve_related(user_query)
+        finally:
+            if max_docs is not None:
+                self.max_docs = old_max_docs
+
+        return {
+            "query": user_query,
+            "related": related,
+            "answer": None,
+        }
