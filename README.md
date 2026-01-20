@@ -9,7 +9,7 @@ RAG pipeline for querying an **osTicket** knowledge base (tickets + FAQs) using:
 This repo is intentionally split into:
 - **Control scripts** (create collection, full load, incremental updates)
 - A reusable **RAG engine** (`rag_core.py`) that returns a string (usable from CLI or API)
-- A small **HTTP API** (`50_rag_api.py`) to integrate as a Tool in Open WebUI
+- A small **HTTP API** (`rag_api.py`) to integrate as a Tool in Open WebUI
 
 ---
 
@@ -36,14 +36,14 @@ This repo is intentionally split into:
   - Uses Milvus chunk retrieval + neighbor chunk expansion
   - Returns citations and splits **used references** vs **retrieved-but-not-used**
 
-- `40_rag_answer.py`
+- `rag_cli.py`
   - CLI runner (interactive). Intended for local testing.
 
-- `50_rag_api.py`
+- `rag_api.py`
   - FastAPI wrapper around `rag_core.RagEngine`
   - Endpoints:
     - `GET /health`
-    - `POST /ask` → `{ "answer": "..." }`
+    - `GET /ask` → `{ "answer": "..." }`
   - Optional API key via `RAG_API_KEY` header `X-API-Key`
 
 - Helpers (debug / diagnostics)
@@ -146,8 +146,9 @@ State file: `.milvus_update_state.json` (already in `.gitignore`).
 
 ```bash
 conda activate osticket-rag
-python 40_rag_answer.py
+python rag_cli.py [--translate]
 ```
+or
 
 ---
 
@@ -157,7 +158,7 @@ Start the API (example port 8000):
 
 ```bash
 conda activate osticket-rag
-uvicorn 50_rag_api:app --host 0.0.0.0 --port 8000
+uvicorn rag_api:app --host 0.0.0.0 --port 8000
 ```
 
 Test:
@@ -165,9 +166,7 @@ Test:
 ```bash
 curl -s http://localhost:8000/health
 
-curl -s -X POST http://localhost:8000/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"install gitea on-prem"}'
+curl -s "http://localhost:8000/ask?query=install%20gitea%20on-prem"
 ```
 
 If you set `RAG_API_KEY`, include:
@@ -227,9 +226,9 @@ Scheduling options:
 
 Point the Tool base URL to:
 
-- `http://10.23.2.50:8000`
+- `http://<server IP>:8000`
 
-Use `POST /ask` and send header `X-API-Key` if `RAG_API_KEY` is set.
+Use `GET /ask` and send header `X-API-Key` if `RAG_API_KEY` is set.
 
 ---
 
