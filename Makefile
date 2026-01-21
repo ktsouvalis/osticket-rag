@@ -24,16 +24,16 @@ api-down:
 	$(DOCKER_COMPOSE) down
 
 create-collection:
-	$(DOCKER_COMPOSE) --profile manual run --rm rag-create-collection
+	$(DOCKER_COMPOSE) --profile manual run --rm --build rag-create-collection
 
 load-initial:
-	$(DOCKER_COMPOSE) --profile manual run --rm rag-load-initial
+	$(DOCKER_COMPOSE) --profile manual run --rm --build rag-load-initial
 
 check-updates:
-	$(DOCKER_COMPOSE) --profile manual run --rm rag-updater --dry-run
+	$(DOCKER_COMPOSE) --profile manual run --rm --build rag-checker
 
 update:
-	$(DOCKER_COMPOSE) --profile manual run --rm rag-updater
+	$(DOCKER_COMPOSE) --profile manual run --rm --build rag-updater
 
 build-updater:
 	$(DOCKER_COMPOSE) build rag-updater
