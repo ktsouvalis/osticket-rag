@@ -22,10 +22,29 @@ from pymilvus import Collection, connections
 STATE_FILE_DEFAULT = ".milvus_update_state.json"
 COLLECTION_NAME_DEFAULT = "osticket_knowledge"
 
+def ensure_state_file(path: str) -> None:
+    """
+    Ensure `path` is a JSON file.
+
+    Docker bind-mounts create a directory if the host path doesn't exist.
+    If that happens, we remove the directory and create the expected file.
+    """
+    if os.path.exists(path) and os.path.isdir(path):
+        for root, dirs, files in os.walk(path, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        os.rmdir(path)
+
+    if not os.path.exists(path):
+        # Create a minimal default state file.
+        save_state(path, {"last_activity_ts": 0, "last_faq_id": 0})
+
+
 
 def load_state(path: str) -> dict:
-    if not os.path.exists(path):
-        return {"last_activity_ts": 0, "last_faq_id": 0}
+    ensure_state_file(path)
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     data.setdefault("last_activity_ts", 0)
@@ -34,6 +53,16 @@ def load_state(path: str) -> dict:
 
 
 def save_state(path: str, state: dict) -> None:
+    # If a directory exists at this path (Docker bind-mount mishap),
+    # remove it so we can write the JSON file.
+    if os.path.exists(path) and os.path.isdir(path):
+        for root, dirs, files in os.walk(path, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        os.rmdir(path)
+
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)

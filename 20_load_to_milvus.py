@@ -122,6 +122,16 @@ def build_insert_data(collection_obj, field_data: dict[str, list]) -> list[list]
 
 
 def save_state(path: str, state: dict) -> None:
+    # If a directory exists at this path (common Docker bind-mount footgun),
+    # remove it so we can create the JSON file.
+    if os.path.exists(path) and os.path.isdir(path):
+        for root, dirs, files in os.walk(path, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        os.rmdir(path)
+
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
@@ -135,9 +145,13 @@ def save_state(path: str, state: dict) -> None:
         os.remove(tmp)
 
 def ensure_state_file(path: str) -> None:
-    # If Docker created it as a directory, fix it decisively
+    """
+    Ensure `path` is a JSON file.
+    - If it doesn't exist -> create it.
+    - If it exists as a directory (Docker bind-mount mishap) -> replace it with a file.
+    """
     if os.path.exists(path) and os.path.isdir(path):
-        # Remove the directory and replace it with a file
+        # nuke the directory contents, then the directory itself
         for root, dirs, files in os.walk(path, topdown=False):
             for name in files:
                 os.remove(os.path.join(root, name))
@@ -145,7 +159,6 @@ def ensure_state_file(path: str) -> None:
                 os.rmdir(os.path.join(root, name))
         os.rmdir(path)
 
-    # If the file does not exist, create it
     if not os.path.exists(path):
         save_state(path, {"last_activity_ts": 0, "last_faq_id": 0})
 
