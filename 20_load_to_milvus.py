@@ -17,7 +17,8 @@ import errno
 from collections import defaultdict
 
 # 1. Setup
-STATE_FILE_DEFAULT = ".milvus_update_state.json"
+STATE_FILE_DEFAULT = "state/.milvus_update_state.json"
+os.makedirs(os.path.dirname(STATE_FILE_DEFAULT), exist_ok=True)
 load_dotenv()
 SERVER_IP = os.getenv('SERVER_IP')
 

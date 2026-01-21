@@ -19,7 +19,8 @@ from ollama import Client
 from pymilvus import Collection, connections
 
 
-STATE_FILE_DEFAULT = ".milvus_update_state.json"
+STATE_FILE_DEFAULT = "state/.milvus_update_state.json"
+os.makedirs(os.path.dirname(STATE_FILE_DEFAULT), exist_ok=True)
 COLLECTION_NAME_DEFAULT = "osticket_knowledge"
 
 def ensure_state_file(path: str) -> None:
