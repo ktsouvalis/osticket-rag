@@ -123,16 +123,6 @@ def build_insert_data(collection_obj, field_data: dict[str, list]) -> list[list]
 
 
 def save_state(path: str, state: dict) -> None:
-    # If a directory exists at this path (common Docker bind-mount footgun),
-    # remove it so we can create the JSON file.
-    if os.path.exists(path) and os.path.isdir(path):
-        for root, dirs, files in os.walk(path, topdown=False):
-            for name in files:
-                os.remove(os.path.join(root, name))
-            for name in dirs:
-                os.rmdir(os.path.join(root, name))
-        os.rmdir(path)
-
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
@@ -149,19 +139,11 @@ def ensure_state_file(path: str) -> None:
     """
     Ensure `path` is a JSON file.
     - If it doesn't exist -> create it.
-    - If it exists as a directory (Docker bind-mount mishap) -> replace it with a file.
     """
-    if os.path.exists(path) and os.path.isdir(path):
-        # nuke the directory contents, then the directory itself
-        for root, dirs, files in os.walk(path, topdown=False):
-            for name in files:
-                os.remove(os.path.join(root, name))
-            for name in dirs:
-                os.rmdir(os.path.join(root, name))
-        os.rmdir(path)
-
     if not os.path.exists(path):
         save_state(path, {"last_activity_ts": 0, "last_faq_id": 0})
+    if not os.path.isfile(path):
+        raise RuntimeError(f"State file was not created: {path}")
 
 def get_embeddings_from_ollama(texts):
     response = client.embed(model=EMBED_MODEL, input=texts)
@@ -169,6 +151,8 @@ def get_embeddings_from_ollama(texts):
 
 def process_and_load():
     ensure_state_file(STATE_FILE_DEFAULT)
+    print("STATE PATH:", STATE_FILE_DEFAULT)
+    print("STATE EXISTS:", os.path.exists(STATE_FILE_DEFAULT), "ISFILE:", os.path.isfile(STATE_FILE_DEFAULT))
     # Must match schema order (excluding pk auto_id):
     # ticket_id, ticket_number, source_type, chunk_index, subject, text_payload, vector
     all_ticket_ids = []
