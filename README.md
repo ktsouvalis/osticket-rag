@@ -1,71 +1,64 @@
-# osTicket RAG (Milvus + Ollama)
+# osTicket RAG (Milvus + Ollama + Open WebUI)
 
 RAG pipeline for querying an **osTicket** knowledge base (tickets + FAQs) using:
 
-- **Milvus** for vector search (COSINE)
-- **Ollama** for embeddings
+- **Milvus** for vector search (HNSW index, COSINE metric)
+- **Ollama** for embeddings (`bge-m3`) and chat (`qwen2.5:14b`)
+- **Cross-encoder reranker** (`bge-reranker-v2-m3`) for precision
 - **MySQL/MariaDB** (osTicket DB) as the source
+- **Open WebUI** as the chat interface with tool integration
 
-This repo is intentionally split into:
-- **Control scripts** (create collection, full load, incremental updates)
-- A reusable **RAG engine** (`rag_core.py`) that returns related tickets (usable from CLI or API)
-- A small **HTTP API** (`rag_api.py`) to integrate as a Tool in Open WebUI
+Users ask questions in Open WebUI, the model calls the RAG API to find relevant tickets, fetches full ticket threads from MySQL, and generates an English answer from Greek ticket content — with source URLs.
+
+---
+
+## How it works
+
+```
+User (Open WebUI) → qwen2.5:14b → RAG Tool → API (/ask)
+                                                  ↓
+                                          Embed query (bge-m3 via Ollama)
+                                                  ↓
+                                          Vector search (Milvus HNSW)
+                                                  ↓
+                                          Rerank (bge-reranker-v2-m3)
+                                                  ↓
+                                          Fetch full tickets (MySQL)
+                                                  ↓
+                                          Return context + metadata
+                                                  ↓
+                                   qwen2.5:14b generates English answer
+                                   with source ticket URLs
+```
 
 ---
 
 ## Files overview
 
-- `10_create_collection.py`
-  - Creates Milvus collection `osticket_knowledge`
-  - Schema fields: `ticket_id`, `ticket_number`, `source_type`, `chunk_index`, `subject`, `text_payload`, `vector`
-  - Creates IVF_FLAT index with `metric_type = COSINE`
+| File | Purpose |
+|------|---------|
+| `rag_core.py` | `RagEngine` class — vector search, reranking, full ticket fetch from MySQL |
+| `rag_api.py` | FastAPI wrapper: `GET /health`, `GET /ask?query=...` |
+| `rag_cli.py` | Interactive CLI for testing queries |
+| `openwebui_tool.py` | Open WebUI Tool definition — paste into Workspace > Tools |
+| `10_create_collection.py` | Creates/resets Milvus collection with HNSW index |
+| `20_load_to_milvus.py` | Full ingestion from MySQL → chunk → embed → Milvus |
+| `30_update_milvus.py` | Incremental updates using watermark timestamp |
+| `01_HELPER_verify_milvus.py` | Test Milvus connectivity |
+| `11_HELPER_extract_raw_ticket.py` | Dump raw ticket thread from MySQL |
+| `41_HELPER_vector_search.py` | Interactive vector search with full context display |
 
-- `20_load_to_milvus.py`
-  - Full ingestion (first run / rebuild)
-  - Loads all ticket threads + published FAQs from osTicket DB
-  - Redacts common secrets **before** embedding and inserting
-  - Initializes `.milvus_update_state.json` for the incremental updater
+Scripts are prefixed with numbers indicating execution order: `10_` → `20_` → `30_`.
 
-- `30_update_milvus.py`
-  - Incremental updater
-  - Detects tickets with activity after a saved watermark (`last_activity_ts`)
-  - Deletes + reinserts only those tickets in Milvus
-  - Keeps state in `.milvus_update_state.json` (persisted via Docker volume)
-
-- `rag_core.py`
-  - `RagEngine.retrieve_related(query: str) -> list[dict]`
-  - Uses Milvus chunk retrieval + neighbor chunk expansion
-  - Returns related tickets only (no ticket content, no LLM answer)
-
-- `rag_cli.py`
-  - CLI runner (interactive).
-  - Prints related ticket number, subject, and URL
-
-- `rag_api.py`
-  - FastAPI wrapper around `rag_core.RagEngine`
-  - Endpoints:
-    - `GET /health`
-    - `POST /ask` → `{ "results": [ { "ticket_number", "subject", "url", ... } ] }`
-  - Optional API key via `RAG_API_KEY` header `X-API-Key`
-
-- Helpers (debug / diagnostics)
-  - `01_HELPER_verify_milvus.py`
-    - Verifies Milvus connectivity and prints server version.
-  - `11_HELPER_extract_raw_ticket.py`
-    - Dumps the raw osTicket thread entries (no cleanup) for a given `ticket_id` from MySQL.
-    - Example usage: `python 11_HELPER_extract_raw_ticket.py 1234`
-  - `41_HELPER_vector_search.py`
-    - Runs a Milvus vector search for an interactive query, prints the matching chunks (`text_payload`),
-      and shows a truncated full MySQL thread/FAQ for deeper debugging.
 ---
 
 ## Prerequisites
 
-You need network connectivity from where you run the scripts/API to:
+Network connectivity from the API server to:
 
 - **Milvus**: `SERVER_IP:19530`
 - **Ollama**: `SERVER_IP:11434`
-- **MySQL/MariaDB (osTicket DB)**: `MYSQL_HOST:3306`
+- **MySQL/MariaDB** (osTicket DB): `MYSQL_HOST:3306`
 
 ---
 
@@ -74,7 +67,6 @@ You need network connectivity from where you run the scripts/API to:
 ### 1) Create Conda env and install dependencies
 
 ```bash
-cd /home/ktsouvalis/Desktop/Dev/osticket-rag
 conda create -n osticket-rag python=3.11 -y
 conda activate osticket-rag
 pip install -r requirements.txt
@@ -88,160 +80,190 @@ cp .env.example .env
 
 Fill in `.env`:
 
-- `SERVER_IP=` (host that runs Milvus + Ollama)
-- `MYSQL_HOST=`
-- `MYSQL_USER=`
-- `MYSQL_PASSWORD=`
-- `MYSQL_DATABASE=`
-- `BASE_TICKET_URL=` (example: `https://patra-helpdesk.uop.gr/scp/tickets.php?id=`)
+- `SERVER_IP=` — host running Milvus + Ollama
+- `MYSQL_HOST=`, `MYSQL_USER=`, `MYSQL_PASSWORD=`, `MYSQL_DATABASE=`
+- `BASE_TICKET_URL=` (e.g. `https://patra-helpdesk.uop.gr/scp/tickets.php?id=`)
+- `RAG_API_KEY=` — protects the `/ask` endpoint
 
-Optional:
-- `EMBED_MODEL_NAME=bge-m3`
-- `RAG_API_KEY=...` (protects the API)
+Optional tuning:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMBED_MODEL_NAME` | `bge-m3` | Ollama embedding model |
+| `RAG_SEARCH_LIMIT` | `120` | Initial vector search results |
+| `RAG_MAX_DOCS` | `8` | Max documents returned |
+| `RAG_MAX_CONTEXT_CHARS` | `24000` | Character budget for context |
+| `RAG_SEARCH_EF` | `128` | HNSW search ef (auto-scales to >= limit) |
+| `RAG_RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model (empty string to disable) |
+| `RAG_RERANKER_DEVICE` | `cpu` | `cpu` or `cuda` |
+| `RAG_RERANK_CANDIDATES` | `20` | Documents to rerank |
+| `RAG_API_DEBUG` | `0` | Set to `1` to expose error details |
+| `LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ---
 
 ## Milvus workflow
 
-Flow summary:
-
-1. `10_create_collection.py` only when you need a clean rebuild (schema/model changes).
-2. `20_load_to_milvus.py` once after a clean rebuild (full load + sets watermark).
-3. `30_update_milvus.py` for regular operations (incremental updates only).
+1. `10_create_collection.py` — only when you need a clean rebuild (schema/model changes).
+2. `20_load_to_milvus.py` — once after a clean rebuild (full load + sets watermark).
+3. `30_update_milvus.py` — for regular operations (incremental updates only).
 
 ### A) Create / reset collection
 
-To recreate from scratch run:
-
 ```bash
-conda activate osticket-rag
 python 10_create_collection.py
 ```
 
 ### B) Initial full load
 
 ```bash
-conda activate osticket-rag
 python 20_load_to_milvus.py
 ```
 
-This also initializes `.milvus_update_state.json` so the incremental updater starts from the current watermark.
+This also initializes `state/.milvus_update_state.json` so the incremental updater starts from the current watermark.
 
-### C) Incremental update (new or updated tickets)
+### C) Incremental update
 
 ```bash
-conda activate osticket-rag
 python 30_update_milvus.py
-```
-
-Dry run:
-
-```bash
-conda activate osticket-rag
-python 30_update_milvus.py --dry-run
-```
-
-State file: `.milvus_update_state.json` (already in `.gitignore`).
-
----
-
-## Querying (CLI)
-
-```bash
-conda activate osticket-rag
-python rag_cli.py
+python 30_update_milvus.py --dry-run    # preview without changes
+python 30_update_milvus.py --include-faq # also update FAQs
 ```
 
 ---
 
-## Running the API (for Open WebUI Tool)
+## Running the API
 
-Start the API (example port 8000):
+### Local
 
 ```bash
-conda activate osticket-rag
 uvicorn rag_api:app --host 0.0.0.0 --port 8000
 ```
 
-Test:
+### Docker
 
 ```bash
-curl -s http://localhost:8000/health
-
-curl -G "http://localhost:8000/ask" \
-  -H "X-API-Key: YOUR_API_KEY" \
-  --data-urlencode "query=your search here"
+make api-up        # build and start (port 8800 → 8000)
+make api-down      # stop
 ```
+
+### Test
+
+```bash
+curl -s http://localhost:8800/health
+
+curl -G "http://localhost:8800/ask" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  --data-urlencode "query=network issue"
+```
+
+The `/ask` endpoint returns:
+
+```json
+{
+  "results": [
+    {
+      "doc_key": "ticket:000324",
+      "source_type": "ticket",
+      "ticket_id": 341,
+      "ticket_number": "000324",
+      "subject": "...",
+      "top_score": 0.64,
+      "url": "https://patra-helpdesk.uop.gr/scp/tickets.php?id=341",
+      "context": "Subject: ...\n\n--- Post by ... ---\n..."
+    }
+  ]
+}
+```
+
+---
+
+## Open WebUI integration
+
+Open WebUI provides the chat interface where users interact with the RAG system.
+
+### 1) Add the Tool
+
+- Go to **Workspace > Tools > "+"** in Open WebUI
+- Paste the contents of `openwebui_tool.py`
+- Save, then click the gear icon and fill in the Valves:
+  - `rag_api_url`: your API URL (e.g. `http://195.251.13.132:8800`)
+  - `rag_api_key`: your API key
+
+### 2) Configure the model
+
+- Go to **Workspace > Models**, create a preset using **qwen2.5:14b**
+- Enable the **osTicket RAG Search** tool
+- Set the system prompt:
+
+```
+You are an IT support assistant with access to an osTicket knowledge base.
+
+When the user asks about past issues, incidents, or infrastructure topics, use the search_tickets tool to find relevant tickets.
+
+When presenting results from the tool:
+- Summarize EACH returned ticket: what the problem was, what was investigated, and how it was resolved.
+- If the resolution is not clearly described in the ticket content, say "resolution not documented" instead of guessing.
+- If multiple tickets were returned, describe all of them, not just the first one.
+- The ticket content is in Greek. Translate and summarize it in English.
+- At the end of your answer, list all source tickets in this format:
+
+**Sources:**
+- Ticket #000123 - Subject here - [Link](URL here)
+- Ticket #000456 - Subject here - [Link](URL here)
+
+Do NOT generate citation markup like [source id="1"]. Just use the format above.
+```
+
+### 3) Test
+
+Start a chat and ask something like:
+
+> What network issues have been reported?
+
+The model will call the RAG tool, get ticket context, and answer in English with source URLs.
 
 ---
 
 ## Deploy on an app server (Docker / Portainer)
 
-This is the recommended way to run the API on an app server while **Milvus + Ollama + Open WebUI** live elsewhere (e.g. GPU server).
+Recommended setup: API on an app server, Milvus + Ollama + Open WebUI on a GPU server.
 
-### 1) Clone the repo on the app server
+### 1) Clone and configure
 
 ```bash
-git clone https://github.com/<YOU>/<REPO>.git
-cd <REPO>
+git clone <REPO_URL>
+cd osticket-rag
 cp .env.example .env
+# Fill in SERVER_IP, MYSQL_*, RAG_API_KEY, BASE_TICKET_URL
 ```
 
-Set at least:
-
-- `SERVER_IP=` (GPU server IP where Milvus+Ollama run)
-- `MYSQL_HOST=`, `MYSQL_USER=`, `MYSQL_PASSWORD=`, `MYSQL_DATABASE=`
-- `RAG_API_KEY=` (recommended)
-
-### 2) Create the Milvus collection
-```bash
-make create-collection
-```
-
-### 3) Initial full load
-```bash
-make load-initial
-```
-
-### 4) Start the API container
-
-With Docker Compose (or a Portainer Stack using `docker-compose.yml`):
+### 2) Initialize
 
 ```bash
-make api-up
+make install    # create-collection + load-initial + api-up
 ```
 
-Healthcheck:
+### 3) Incremental updates
 
 ```bash
-curl -s http://localhost:8000/health
+make update           # run on-demand
+make check-updates    # dry-run
 ```
 
-### 5) Run incremental updates
+Schedule with host cron or Portainer scheduled job.
 
-Run on-demand (one-off container):
-
-```bash
-make update
-```
-
-State persistence:
-
-- The initial loader and the updater store their watermark in `/app/.milvus_update_state.json`, and `./.milvus_update_state.json` is bind-mounted into the container so it survives recreation.
-
-Scheduling options:
-
-- **Host cron** (simple/reliable): run the command above every X minutes.
-- **Portainer scheduled job** (if enabled): run the same container command.
+State is persisted in `./state/` (bind-mounted as Docker volume).
 
 ---
 
 ## Notes
 
-- Vector search uses `metric_type = COSINE` to match the collection index.
-- If you change embedding model or embedding dimension, you must reset and rebuild:
-  - `10_create_collection.py`
-  - `20_load_to_milvus.py`
+- If you change the embedding model or dimension, you must do a full rebuild: `make create-collection` then `make load-initial`.
+- Secret redaction runs before embedding/storage — passwords, API keys, tokens, and URL credentials are replaced with `[REDACTED]`.
+- The reranker model (~560MB) is downloaded from HuggingFace on first startup.
+- The reranker runs on CPU by default. Set `RAG_RERANKER_DEVICE=cuda` if the API server has a compatible GPU.
+- FAQs are stored with `ticket_id = faq_id + 100000` to avoid collisions with ticket IDs.
 
 ---
 
