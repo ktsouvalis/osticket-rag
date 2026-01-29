@@ -4,7 +4,7 @@ author: ktsouvalis
 description: Searches the osTicket knowledge base for relevant tickets and FAQs using semantic search. Returns full ticket threads with source URLs.
 required_open_webui_version: 0.4.0
 requirements: requests
-version: 1.0.0
+version: 1.1.0
 licence: MIT
 """
 
@@ -57,17 +57,20 @@ class Tools:
             return "No relevant tickets found for this query."
 
         output_parts = []
-        for r in results:
+        for i, r in enumerate(results, 1):
             ticket_number = r.get("ticket_number", "?")
             source_type = r.get("source_type", "ticket")
             subject = r.get("subject", "")
             url = r.get("url", "")
             context = r.get("context", "")
 
-            header = f"[{source_type.upper()} #{ticket_number}] {subject}"
+            lines = [f"=== Source {i}: {source_type.upper()} #{ticket_number} ==="]
+            lines.append(f"Subject: {subject}")
             if url:
-                header += f"\nURL: {url}"
+                lines.append(f"URL: {url}")
+            lines.append("")
+            lines.append(context)
 
-            output_parts.append(f"{header}\n\n{context}")
+            output_parts.append("\n".join(lines))
 
         return "\n\n---\n\n".join(output_parts)
