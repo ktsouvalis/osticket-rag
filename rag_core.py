@@ -204,7 +204,7 @@ class RagEngine:
         self.top_chunks_per_doc = int(os.getenv("RAG_TOP_CHUNKS_PER_DOC", "4"))
         self.neighbor_window = int(os.getenv("RAG_NEIGHBOR_WINDOW", "1"))
         self.max_context_chars = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "24000"))
-        self.search_ef = int(os.getenv("RAG_SEARCH_EF", "64"))
+        self.search_ef = int(os.getenv("RAG_SEARCH_EF", "128"))
 
         # Broad-query adaptation
         self.broad_query_boost = float(os.getenv("RAG_BROAD_QUERY_BOOST", "2.5"))
@@ -274,10 +274,11 @@ class RagEngine:
             q_vec = self.ollama.embed(model=self.embed_model, input=q)["embeddings"]
             q_vec = _ensure_vector_batch(q_vec)
 
+            ef = max(self.search_ef, limit_per_query)
             results = self.collection.search(
                 data=q_vec,
                 anns_field="vector",
-                param={"metric_type": "COSINE", "params": {"ef": self.search_ef}},
+                param={"metric_type": "COSINE", "params": {"ef": ef}},
                 limit=limit_per_query,
                 output_fields=[
                     "pk",
@@ -385,10 +386,11 @@ class RagEngine:
         q_vec = self.ollama.embed(model=self.embed_model, input=user_query)["embeddings"]
         q_vec = _ensure_vector_batch(q_vec)
 
+        ef = max(self.search_ef, search_limit)
         search_results = self.collection.search(
             data=q_vec,
             anns_field="vector",
-            param={"metric_type": "COSINE", "params": {"ef": self.search_ef}},
+            param={"metric_type": "COSINE", "params": {"ef": ef}},
             limit=search_limit,
             output_fields=[
                 "pk",
