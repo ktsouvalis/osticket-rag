@@ -10,7 +10,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 import os
 import re
-import hashlib
 import json
 import time
 import errno
@@ -87,28 +86,28 @@ def clean_text(html_content):
 def redact_secrets(text: str) -> str:
     """
     Redact common credential patterns BEFORE embedding/storing.
-    Extend as you discover more patterns in your tickets.
+    Keep consistent with rag_core.py and 30_update_milvus.py.
     """
     if not text:
         return ""
-    patterns = [
-        # "admin / password" style
-        r"(\b(?:admin|root|netadmin|user)\b)\s*/\s*([^\s\)]+)",
-        # "password: ..."
-        r"(?i)(password\s*:\s*)(\S+)",
-        # "only password: ..."
-        r"(?i)(only\s+password\s*:\s*)(\S+)",
-    ]
     redacted = text
-    redacted = re.sub(patterns[0], r"\1 / [REDACTED]", redacted)
-    redacted = re.sub(patterns[1], r"\1[REDACTED]", redacted)
-    redacted = re.sub(patterns[2], r"\1[REDACTED]", redacted)
+    # "admin / password" style
+    redacted = re.sub(
+        r"(\b(?:admin|root|netadmin|user)\b)\s*/\s*([^\s\)]+)",
+        r"\1 / [REDACTED]", redacted)
+    # "password: ...", "passwd: ...", "pwd: ...", "pass=..." etc.
+    redacted = re.sub(
+        r"(?i)((?:password|passwd|pwd|pass)\s*[:=]\s*)(\S+)",
+        r"\1[REDACTED]", redacted)
+    # "api_key: ...", "api-key: ...", "apikey: ...", "token: ...", "secret: ..."
+    redacted = re.sub(
+        r"(?i)((?:api[_\-]?key|token|secret)\s*[:=]\s*)(\S+)",
+        r"\1[REDACTED]", redacted)
+    # URLs with embedded credentials: http://user:pass@host
+    redacted = re.sub(
+        r"(https?://)([^:@\s]+):([^@\s]+)@",
+        r"\1\2:[REDACTED]@", redacted)
     return redacted
-
-
-def stable_int64(value: str) -> int:
-    digest = hashlib.sha256(value.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
 
 
 def build_insert_data(collection_obj, field_data: dict[str, list]) -> list[list]:
@@ -161,7 +160,6 @@ def process_and_load():
     all_chunk_indexes = []
     all_subjects = []
     all_payloads = []
-    all_pks = []
 
     print("🔍 Fetching and Grouping Ticket Threads...")
     cursor.execute("""
@@ -209,7 +207,6 @@ def process_and_load():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(subject)
             all_payloads.append(chunk)
-            all_pks.append(stable_int64(f"ticket:{t_id}:{chunk_index}"))
 
     # FAQs -> chunks
     max_seen_faq_id = 0
@@ -230,7 +227,6 @@ def process_and_load():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(question)
             all_payloads.append(chunk)
-            all_pks.append(stable_int64(f"faq:{faq_id}:{chunk_index}"))
 
     if not all_payloads:
         print("No payloads to embed/insert.")
@@ -247,7 +243,6 @@ def process_and_load():
         print(f"Processed {min(i + batch_size, len(all_payloads))}/{len(all_payloads)}...")
 
     field_data = {
-        "pk": all_pks,
         "ticket_id": all_ticket_ids,
         "ticket_number": all_ticket_numbers,
         "source_type": all_source_types,

@@ -5,7 +5,6 @@
 import argparse
 import errno
 import json
-import hashlib
 import os
 import re
 import time
@@ -84,19 +83,27 @@ def clean_text(html_content):
 def redact_secrets(text: str) -> str:
     """
     Redact common credential patterns BEFORE embedding/storing.
-    Keep consistent with 20_load_to_milvus.py.
+    Keep consistent with rag_core.py and 20_load_to_milvus.py.
     """
     if not text:
         return ""
-    patterns = [
-        r"(\b(?:admin|root|netadmin|user)\b)\s*/\s*([^\s\)]+)",
-        r"(?i)(password\s*:\s*)(\S+)",
-        r"(?i)(only\s+password\s*:\s*)(\S+)",
-    ]
     redacted = text
-    redacted = re.sub(patterns[0], r"\1 / [REDACTED]", redacted)
-    redacted = re.sub(patterns[1], r"\1[REDACTED]", redacted)
-    redacted = re.sub(patterns[2], r"\1[REDACTED]", redacted)
+    # "admin / password" style
+    redacted = re.sub(
+        r"(\b(?:admin|root|netadmin|user)\b)\s*/\s*([^\s\)]+)",
+        r"\1 / [REDACTED]", redacted)
+    # "password: ...", "passwd: ...", "pwd: ...", "pass=..." etc.
+    redacted = re.sub(
+        r"(?i)((?:password|passwd|pwd|pass)\s*[:=]\s*)(\S+)",
+        r"\1[REDACTED]", redacted)
+    # "api_key: ...", "api-key: ...", "apikey: ...", "token: ...", "secret: ..."
+    redacted = re.sub(
+        r"(?i)((?:api[_\-]?key|token|secret)\s*[:=]\s*)(\S+)",
+        r"\1[REDACTED]", redacted)
+    # URLs with embedded credentials: http://user:pass@host
+    redacted = re.sub(
+        r"(https?://)([^:@\s]+):([^@\s]+)@",
+        r"\1\2:[REDACTED]@", redacted)
     return redacted
 
 
@@ -138,11 +145,6 @@ def ensure_embedding_dim(client_obj: Client, model: str, collection_obj: Collect
     dim = get_collection_vector_dim(collection_obj)
     if len(vec) != dim:
         raise RuntimeError(f"Embedding dim {len(vec)} does not match collection dim {dim} for model '{model}'.")
-
-
-def stable_int64(value: str) -> int:
-    digest = hashlib.sha256(value.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
 
 
 def build_insert_data(collection_obj: Collection, field_data: dict[str, list]) -> list[list]:
@@ -336,7 +338,6 @@ def main():
     all_chunk_indexes = []
     all_subjects = []
     all_payloads = []
-    all_pks = []
 
     for t_id, data in tickets_data.items():
         t_number = data["ticket_number"] or str(t_id)
@@ -351,7 +352,6 @@ def main():
             all_chunk_indexes.append(int(chunk_index))
             all_subjects.append(subject)
             all_payloads.append(chunk)
-            all_pks.append(stable_int64(f"ticket:{t_id}:{chunk_index}"))
 
     # 3) Optional FAQ incremental (ID-based, unchanged)
     max_seen_faq_id = last_faq_id
@@ -384,7 +384,6 @@ def main():
                 all_chunk_indexes.append(int(chunk_index))
                 all_subjects.append(question)
                 all_payloads.append(chunk)
-                all_pks.append(stable_int64(f"faq:{faq_id}:{chunk_index}"))
 
     if not all_payloads:
         print("No chunks to insert after filtering/cleaning.")
@@ -414,7 +413,6 @@ def main():
     delete_ticket_rows_bulk(collection, ticket_ids=list(tickets_data.keys()), source_type="ticket")
 
     field_data = {
-        "pk": all_pks,
         "ticket_id": all_ticket_ids,
         "ticket_number": all_ticket_numbers,
         "source_type": all_source_types,

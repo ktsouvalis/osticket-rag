@@ -48,7 +48,7 @@ python 41_HELPER_vector_search.py           # Interactive vector search with ful
 2. **Text processing**: HTML cleaning (BeautifulSoup), email header stripping, junk ticket filtering, secret redaction
 3. **Chunking**: `RecursiveCharacterTextSplitter` (chunk_size=1200, overlap=200)
 4. **Embedding**: Ollama `bge-m3` model (1024 dimensions)
-5. **Storage**: Milvus collection `osticket_knowledge` with IVF_FLAT index, COSINE metric
+5. **Storage**: Milvus collection `osticket_knowledge` with HNSW index, COSINE metric
 6. **Retrieval**: Vector search → group by document → top chunks with neighbor expansion → character-budgeted output
 
 ### Key components
@@ -88,7 +88,7 @@ Copy `.env.example` to `.env`. Required variables:
 Optional tuning (see defaults in `rag_core.py:RagEngine.__init__`):
 
 - `RAG_API_KEY` — Protect the `/ask` endpoint
-- `EMBED_MODEL_NAME` (default: `bge-m3`), `RAG_SEARCH_LIMIT` (120), `RAG_MAX_DOCS` (8), `RAG_TOP_CHUNKS_PER_DOC` (4), `RAG_NEIGHBOR_WINDOW` (1), `RAG_MAX_CONTEXT_CHARS` (24000), `RAG_NPROBE` (10)
+- `EMBED_MODEL_NAME` (default: `bge-m3`), `RAG_SEARCH_LIMIT` (120), `RAG_MAX_DOCS` (8), `RAG_TOP_CHUNKS_PER_DOC` (4), `RAG_NEIGHBOR_WINDOW` (1), `RAG_MAX_CONTEXT_CHARS` (24000), `RAG_SEARCH_EF` (64)
 - `RAG_API_DEBUG=1` — Expose error details in API responses
 - `LOG_LEVEL` — Logging verbosity
 

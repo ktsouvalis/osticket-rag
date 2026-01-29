@@ -35,9 +35,9 @@ schema = CollectionSchema(fields, description="Knowledge base from osTicket tick
 collection = Collection(name=collection_name, schema=schema)
 
 index_params = {
-    "metric_type": "COSINE",          # recommended unless you normalize and want IP
-    "index_type": "IVF_FLAT",
-    "params": {"nlist": 1024},        # adjust based on data size; 128 is OK for small corpora
+    "metric_type": "COSINE",
+    "index_type": "HNSW",
+    "params": {"M": 16, "efConstruction": 256},
 }
 collection.create_index(field_name="vector", index_params=index_params)
 

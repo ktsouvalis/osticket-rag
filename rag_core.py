@@ -123,15 +123,23 @@ def extract_vlan_ids(text: str) -> set[str]:
 def redact_secrets(text: str) -> str:
     if not text:
         return ""
-    patterns = [
-        r"(\b(?:admin|root|netadmin|user)\b)\s*/\s*([^\s\)]+)",
-        r"(?i)(password\s*:\s*)(\S+)",
-        r"(?i)(only\s+password\s*:\s*)(\S+)",
-    ]
     redacted = text
-    redacted = re.sub(patterns[0], r"\1 / [REDACTED]", redacted)
-    redacted = re.sub(patterns[1], r"\1[REDACTED]", redacted)
-    redacted = re.sub(patterns[2], r"\1[REDACTED]", redacted)
+    # "admin / password" style
+    redacted = re.sub(
+        r"(\b(?:admin|root|netadmin|user)\b)\s*/\s*([^\s\)]+)",
+        r"\1 / [REDACTED]", redacted)
+    # "password: ...", "passwd: ...", "pwd: ...", "pass=..." etc.
+    redacted = re.sub(
+        r"(?i)((?:password|passwd|pwd|pass)\s*[:=]\s*)(\S+)",
+        r"\1[REDACTED]", redacted)
+    # "api_key: ...", "api-key: ...", "apikey: ...", "token: ...", "secret: ..."
+    redacted = re.sub(
+        r"(?i)((?:api[_\-]?key|token|secret)\s*[:=]\s*)(\S+)",
+        r"\1[REDACTED]", redacted)
+    # URLs with embedded credentials: http://user:pass@host
+    redacted = re.sub(
+        r"(https?://)([^:@\s]+):([^@\s]+)@",
+        r"\1\2:[REDACTED]@", redacted)
     return redacted
 
 
@@ -196,7 +204,7 @@ class RagEngine:
         self.top_chunks_per_doc = int(os.getenv("RAG_TOP_CHUNKS_PER_DOC", "4"))
         self.neighbor_window = int(os.getenv("RAG_NEIGHBOR_WINDOW", "1"))
         self.max_context_chars = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "24000"))
-        self.nprobe = int(os.getenv("RAG_NPROBE", "10"))
+        self.search_ef = int(os.getenv("RAG_SEARCH_EF", "64"))
 
         # Broad-query adaptation
         self.broad_query_boost = float(os.getenv("RAG_BROAD_QUERY_BOOST", "2.5"))
@@ -269,7 +277,7 @@ class RagEngine:
             results = self.collection.search(
                 data=q_vec,
                 anns_field="vector",
-                param={"metric_type": "COSINE", "params": {"nprobe": self.nprobe}},
+                param={"metric_type": "COSINE", "params": {"ef": self.search_ef}},
                 limit=limit_per_query,
                 output_fields=[
                     "pk",
@@ -380,7 +388,7 @@ class RagEngine:
         search_results = self.collection.search(
             data=q_vec,
             anns_field="vector",
-            param={"metric_type": "COSINE", "params": {"nprobe": self.nprobe}},
+            param={"metric_type": "COSINE", "params": {"ef": self.search_ef}},
             limit=search_limit,
             output_fields=[
                 "pk",
