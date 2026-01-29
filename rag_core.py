@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 from typing import Optional
 
+import mysql.connector
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from ollama import Client
@@ -143,17 +144,22 @@ def redact_secrets(text: str) -> str:
     return redacted
 
 
-def clean_html_for_llm(html_content: str) -> str:
-    # Kept for completeness; not used in this module
+_EMAIL_HEADER_PATTERNS = [
+    r"From:.*", r"Sent:.*", r"---.*Forwarded Message.*---",
+    r"Προωθημένο μήνυμα", r"On.*wrote:.*", r"Στις.*έγραψε:.*",
+]
+
+
+def clean_html(html_content: str) -> str:
     if not html_content:
         return ""
     soup = BeautifulSoup(html_content, "html.parser")
-    for tag in soup.find_all(["p", "br", "div", "li", "tr", "h1", "h2", "h3"]):
-        tag.append("\n")
-    text = soup.get_text(separator=" ")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s*\n", "\n\n", text)
-    return text.strip()
+    for img in soup.find_all("img"):
+        img.decompose()
+    text = soup.get_text(separator="\n")
+    for pattern in _EMAIL_HEADER_PATTERNS:
+        text = re.split(pattern, text, flags=re.IGNORECASE | re.MULTILINE)[0]
+    return re.sub(r"\n\s*\n", "\n\n", text).strip()
 
 
 def pick_chunk_indices_for_doc(items, *, top_unique: int, neighbor_window: int, max_total: int):
@@ -216,12 +222,69 @@ class RagEngine:
         self.vlan_enum_limit_per_query = int(os.getenv("RAG_VLAN_LIMIT_PER_QUERY", "300"))
         self.vlan_enum_max_results = int(os.getenv("RAG_VLAN_MAX_RESULTS", "3000"))
 
+        # MySQL config (for fetching full ticket threads at query time)
+        self._db_config = {
+            "host": os.getenv("MYSQL_HOST"),
+            "user": os.getenv("MYSQL_USER"),
+            "password": os.getenv("MYSQL_PASSWORD"),
+            "database": os.getenv("MYSQL_DATABASE"),
+        }
+        self._db = None
+
         # Connections
         self.ollama = Client(host=f"http://{self.server_ip}:11434")
         connections.connect(host=self.server_ip, port="19530")
         self.collection = Collection(collection_name)
         self.collection.load()
         _ensure_embedding_dim(self.ollama, self.embed_model, self.collection)
+
+    def _get_db(self):
+        if self._db is None or not self._db.is_connected():
+            self._db = mysql.connector.connect(**self._db_config)
+        return self._db
+
+    def fetch_full_ticket(self, ticket_id: int) -> str:
+        db = self._get_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT c.subject, e.body, e.poster
+            FROM ost_ticket t
+            JOIN ost_ticket__cdata c ON t.ticket_id = c.ticket_id
+            JOIN ost_thread th ON t.ticket_id = th.object_id
+            JOIN ost_thread_entry e ON th.id = e.thread_id
+            WHERE th.object_type = 'T' AND e.body != ''
+              AND t.ticket_id = %s
+            ORDER BY e.created ASC
+            """,
+            (ticket_id,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return ""
+        subject = rows[0].get("subject") or ""
+        parts = [f"Subject: {subject}"]
+        for row in rows:
+            body = clean_html(row.get("body") or "")
+            if len(body) < 20:
+                continue
+            poster = row.get("poster") or "Unknown"
+            parts.append(f"\n--- Post by {poster} ---\n{body}")
+        return redact_secrets("\n".join(parts))
+
+    def fetch_full_faq(self, faq_id: int) -> str:
+        db = self._get_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT question, answer FROM ost_faq WHERE faq_id = %s",
+            (faq_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return ""
+        question = row.get("question") or ""
+        answer = clean_html(row.get("answer") or "")
+        return redact_secrets(f"FAQ: {question}\n\n{answer}")
 
     def fetch_chunks_by_indices(self, ticket_id: int, source_type: str, indices: list[int]):
         if ticket_id is None or not indices:
@@ -441,35 +504,24 @@ class RagEngine:
             best = max(all_items_for_doc, key=lambda x: x[0])
             top_score, _pk, ticket_id, ticket_number, source_type, _chunk_index, subject, _payload = best
 
-            wanted_idxs = pick_chunk_indices_for_doc(
-                all_items_for_doc,
-                top_unique=top_unique,
-                neighbor_window=neighbor_window,
-                max_total=self.max_indices_per_doc,
-            )
+            # Fetch full content from MySQL instead of using chunks
+            if source_type == "faq" and isinstance(ticket_id, int) and ticket_id >= 100000:
+                full_text = self.fetch_full_faq(ticket_id - 100000)
+            elif isinstance(ticket_id, int):
+                full_text = self.fetch_full_ticket(ticket_id)
+            else:
+                full_text = ""
 
-            fetched = self.fetch_chunks_by_indices(
-                ticket_id=int(ticket_id) if ticket_id is not None else None,
-                source_type=source_type,
-                indices=wanted_idxs,
-            )
-
-            score_by_pk = {pk: score for (score, pk, *_rest) in all_items_for_doc}
-            fetched.sort(key=lambda x: (x[5] if isinstance(x[5], int) else 10**9))
-
-            used_any = False
-            for _s, pk, ticket_id, ticket_number, source_type, chunk_index, subject, payload in fetched:
-                score = score_by_pk.get(pk)
-                score_txt = f"{score:.4f}" if isinstance(score, float) else "n/a"
-                citation = f"[src: {source_type} #{ticket_number} chunk:{chunk_index} pk:{pk} score:{score_txt}]"
-                block = f"{citation}\n{redact_secrets(payload)}"
-                if total_chars + len(block) > self.max_context_chars:
-                    break
-                total_chars += len(block)
-                used_any = True
-
-            if not used_any:
+            if not full_text:
                 continue
+
+            # Respect character budget; truncate if needed
+            remaining = self.max_context_chars - total_chars
+            if remaining < 200:
+                break
+            if len(full_text) > remaining:
+                full_text = full_text[:remaining] + "\n[truncated]"
+            total_chars += len(full_text)
 
             entry = {
                 "doc_key": doc_key,
@@ -478,6 +530,7 @@ class RagEngine:
                 "ticket_number": ticket_number,
                 "subject": subject,
                 "top_score": top_score,
+                "context": full_text,
             }
             if self.base_ticket_url and source_type == "ticket" and isinstance(ticket_id, int) and ticket_id < 100000:
                 entry["url"] = f"{self.base_ticket_url}{ticket_id}"

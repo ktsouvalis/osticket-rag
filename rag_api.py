@@ -25,6 +25,7 @@ class RelatedDoc(BaseModel):
     subject: str
     top_score: float | None = None
     url: str | None = None
+    context: str | None = None
 
 
 class AskResponse(BaseModel):
