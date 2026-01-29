@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from collections import defaultdict
@@ -8,6 +9,8 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from ollama import Client
 from pymilvus import Collection, connections
+
+logger = logging.getLogger("osticket-rag")
 
 
 # Heuristic to detect “broad / whole process / list all” questions
@@ -230,6 +233,18 @@ class RagEngine:
             "database": os.getenv("MYSQL_DATABASE"),
         }
         self._db = None
+
+        # Reranker (optional — set RAG_RERANKER_MODEL="" to disable)
+        reranker_model = os.getenv("RAG_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+        self.rerank_candidates = int(os.getenv("RAG_RERANK_CANDIDATES", "20"))
+        if reranker_model:
+            from sentence_transformers import CrossEncoder
+            logger.info("Loading reranker model '%s' ...", reranker_model)
+            reranker_device = os.getenv("RAG_RERANKER_DEVICE", "cpu")
+            self.reranker = CrossEncoder(reranker_model, device=reranker_device)
+            logger.info("Reranker loaded.")
+        else:
+            self.reranker = None
 
         # Connections
         self.ollama = Client(host=f"http://{self.server_ip}:11434")
@@ -493,6 +508,22 @@ class RagEngine:
             key=lambda kv: max(item[0] for item in kv[1]),
             reverse=True,
         )
+
+        # Rerank top candidates using cross-encoder
+        if self.reranker and ranked_docs:
+            candidates = ranked_docs[: self.rerank_candidates]
+            # Use the best-scoring chunk text per document for reranking
+            pairs = []
+            for _doc_key, items in candidates:
+                best = max(items, key=lambda x: x[0])
+                pairs.append((user_query, best[7]))  # best[7] = payload
+            rerank_scores = self.reranker.predict(pairs)
+            reranked = sorted(
+                zip(rerank_scores, candidates),
+                key=lambda x: float(x[0]),
+                reverse=True,
+            )
+            ranked_docs = [(dk, items) for _, (dk, items) in reranked]
 
         total_chars = 0
         results = []
