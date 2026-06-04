@@ -13,6 +13,7 @@ def test_connection():
         version = utility.get_server_version()
         print(f"Connected to Milvus server at {SERVER_IP}")
         print(f"Milvus Version: {version}")
+        print(utility.list_collections())
 
     except Exception as e:
         print(f"Connection error: {e}")
